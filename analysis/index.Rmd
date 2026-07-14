@@ -17,3 +17,6 @@ Welcome to my research website.
 [H3K27ac DGE](https://johndhurley.github.io/CrossSpecies_CM_Diff_H3K27ac/H3K27ac_DGE.html)
 
 
+
+
+wflow_publish("analysis/Index.Rmd")
