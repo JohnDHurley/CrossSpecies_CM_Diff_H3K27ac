@@ -1,0 +1,19 @@
+---
+title: "RNA Sequencing"
+site: workflowr::wflow_site
+output:
+  workflowr::wflow_html:
+    toc: false
+editor_options:
+  chunk_output_type: console
+---
+
+Welcome to my research website.
+
+[H3K27ac QC Checks](https://johndhurley.github.io/CrossSpecies_CM_Diff_H3K27ac/QC_Checks.html)
+
+[H3K27ac PCA](https://johndhurley.github.io/CrossSpecies_CM_Diff_H3K27ac/H3K27ac_PCA.html)
+
+[H3K27ac DGE](https://johndhurley.github.io/CrossSpecies_CM_Diff_H3K27ac/H3K27ac_DGE.html)
+
+

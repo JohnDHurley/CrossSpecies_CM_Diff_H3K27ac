@@ -1,0 +1,5737 @@
+---
+title: "H3K27ac_DGE"
+output: html_document
+date: "2026-03-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	dev = c("png","pdf")
+)
+
+# ---- AUTO-SAVE PNG + PDF FOR EVERY PLOT ----
+knitr::knit_hooks$set(plot = function(x, options) {
+  outdir <- "docs"
+  dir.create(outdir, showWarnings = FALSE)
+
+  # Base filename (chunk label or auto-generated)
+  name <- options$label
+  if (is.null(name) || name == "") {
+    name <- paste0("plot-", knitr::opts_current$get("chunk.id"))
+  }
+
+  # Save PNG
+  pngfile <- file.path(outdir, paste0(name, ".png"))
+  grDevices::png(pngfile, width = 800, height = 600, res = 120)
+  print(x)
+  grDevices::dev.off()
+
+  # Save PDF
+  pdffile <- file.path(outdir, paste0(name, ".pdf"))
+  grDevices::pdf(pdffile, width = 7, height = 5)
+  print(x)
+  grDevices::dev.off()
+
+  # Return plot to appear in the knitted document
+  knitr::hook_plot_md(x, options)
+})
+```
+
+```{r Setting the Enviroment}
+
+#loading libraries
+library("tidyverse")
+library("readxl")
+library("readr")
+library("ggrepel")
+library("ggfortify")
+library("patchwork")
+library("eulerr")
+library("org.Hs.eg.db")
+library("AnnotationDbi")
+library("ggVennDiagram")
+library("ggrastr")
+library("edgeR")
+library("limma")
+library("ggsignif")
+library("dplyr")
+library("purrr")
+library("ggplot2")
+library("tidyr")
+# BiocManager::install("VennDiagram")
+
+
+
+#Loading objects used in this workbook
+H3K27ac_Metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+ann_colors <- readRDS("data/Data_Sets/ann_colors.RDS")
+H3K27ac_hg38_Reproducible2_fc <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
+H3K27ac_hg38_Reproducible3_fc <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible3_fc.RDS")
+H3K27ac_hg38_Reproducible4_fc <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible4_fc.RDS")
+```
+
+```{r Volcano_Plot_Function,Result="Hide",warning=FALSE, include = FALSE}
+generate_volcano_plot <- function(toptable, title) {
+  
+  # #check for entrezid 
+  # if(!"Entrez_ID" %in% colnames(toptable)) stop("Entrez_ID col not present")
+  # 
+  #make significance labels
+  
+  toptable <- toptable %>% 
+    mutate(Significance = case_when(
+      logFC > 0 & adj.P.Val < 0.05 ~ "Upregulated",
+      logFC < 0 & adj.P.Val < 0.05 ~ "Downregulated",
+      TRUE  ~ "Not Significant"
+    ))
+  
+  #factor significance
+  toptable$Significance <- factor(
+    toptable$Significance, 
+    levels = c("Upregulated", 
+               "Not Significant", 
+               "Downregulated")
+  )
+  
+  #count genes in each category
+  upgenes <- sum(toptable$Significance == "Upregulated")
+  nsgenes <- sum(toptable$Significance == "Not Significant")
+  downgenes <- sum(toptable$Significance == "Downregulated")
+  
+  
+  #labels for legend
+  legend_lab <- c(
+    paste0("Upregulated: ", upgenes),
+    paste0("Not Significant: ", nsgenes),
+    paste0("Downregulated: ", downgenes)
+  )
+  
+  #colors 
+  color_map <- c("Upregulated" = "blue",
+                 "Not Significant" = "grey30",
+                 "Downregulated" = "red")
+  
+  #generate volcano plots
+  p <- ggplot(toptable, aes(x = logFC, 
+                            y = -log10(P.Value),
+                            color = Significance)) +
+    geom_point_rast(alpha = 0.8, size = 3) +
+    scale_color_manual(values = color_map, 
+                       labels = legend_lab,
+                       breaks = c("Upregulated",
+                                  "Not Significant", 
+                                  "Downregulated"))  +
+    xlim(-20,20) +
+    labs(title = title, 
+         x = expression("log"[2]*"FC"),
+         y = expression("-log"[10]*"p-value")) +
+    # theme_custom() +
+    theme(legend.position = "right")
+  
+  return(p)
+}
+
+
+```
+
+```{r FC_Plot_Function_Species_sig, include = FALSE}
+
+plot_cluster_fc_sig_species <- function(gene_vector, cluster_name, top_table) {
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "HvC_Day0","HvC_Day2","HvC_Day4","HvC_Day5","HvC_Day15","HvC_Day30"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$logFC,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+  p <- ggplot(df, aes(x = Comparisons, y = logFC)) +
+    geom_boxplot(aes(fill = Comparisons)) +
+    theme_bw() +
+    xlab(" ") +
+    ylab("logFC") +
+    ggtitle(
+      paste0(
+        cluster_name,
+        " Species DERs FC Comparisons\nKruskal–Wallis p = ",
+        signif(kw$p.value, 3)
+      )
+    ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    theme(
+      plot.title = element_text(size = rel(1.3), hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text.x = element_text(size = 8, angle = 15)
+    )
+
+  return(p)
+}
+
+```
+
+```{r FC_Plot_Function_Species_sig_No4, include = FALSE}
+
+plot_cluster_fc_sig_species_No4 <- function(gene_vector, cluster_name, top_table) {
+  
+  comparison_colors <- c(
+  HvC_Day0  = unname(ann_colors$timepoint_cor["Day0"]),
+  HvC_Day2  = unname(ann_colors$timepoint_cor["Day2"]),
+  HvC_Day5  = unname(ann_colors$timepoint_cor["Day5"]),
+  HvC_Day15 = unname(ann_colors$timepoint_cor["Day15"]),
+  HvC_Day30 = unname(ann_colors$timepoint_cor["Day30"])
+)
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15","HvC_Day30"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$logFC,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+ p <- ggplot(df, aes(x = Comparisons, y = logFC)) +
+  geom_boxplot(aes(fill = Comparisons)) +
+  scale_fill_manual(values = comparison_colors) +
+  theme_bw() +
+  xlab(" ") +
+  ylab("logFC") +
+  ggtitle(
+    paste0(
+      cluster_name,
+      " Species DERs FC Comparisons\nKruskal–Wallis p = ",
+      signif(kw$p.value, 3)
+    )
+  ) +
+  coord_cartesian(ylim = c(-5, 5)) +
+  theme(
+    plot.title = element_text(size = rel(1.3), hjust = 0.5),
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 15),
+    legend.position = "none"
+  )
+
+  return(p)
+}
+
+```
+
+```{r absFC_Plot_Function_Species_sig_No4, include = FALSE}
+
+plot_cluster_absfc_sig_species_No4 <- function(gene_vector, cluster_name, top_table) {
+  
+  comparison_colors <- c(
+  HvC_Day0  = unname(ann_colors$timepoint_cor["Day0"]),
+  HvC_Day2  = unname(ann_colors$timepoint_cor["Day2"]),
+  HvC_Day5  = unname(ann_colors$timepoint_cor["Day5"]),
+  HvC_Day15 = unname(ann_colors$timepoint_cor["Day15"]),
+  HvC_Day30 = unname(ann_colors$timepoint_cor["Day30"])
+)
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15","HvC_Day30"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$logFC,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+ p <- ggplot(df, aes(x = Comparisons, y = absfc)) +
+  geom_boxplot(aes(fill = Comparisons)) +
+  scale_fill_manual(values = comparison_colors) +
+  theme_bw() +
+  xlab(" ") +
+  ylab("absfc") +
+  ggtitle(
+    paste0(
+      cluster_name,
+      " Species DERs absfc Comparisons\nKruskal–Wallis p = ",
+      signif(kw$p.value, 3)
+    )
+  ) +
+  coord_cartesian(ylim = c(0,5)) +
+  theme(
+    plot.title = element_text(size = rel(1.3), hjust = 0.5),
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 15),
+    legend.position = "none"
+  )
+
+  return(p)
+}
+
+```
+
+```{r AbsFC_Plot_Function_Species_sig, include = FALSE}
+
+plot_cluster_absfc_sig_species <- function(gene_vector, cluster_name, top_table) {
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "HvC_Day0","HvC_Day2","HvC_Day4","HvC_Day5","HvC_Day15","HvC_Day30"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$absfc,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+  p <- ggplot(df, aes(x = Comparisons, y = absfc)) +
+    geom_boxplot(aes(fill = Comparisons)) +
+    theme_bw() +
+    xlab(" ") +
+    ylab("absfc") +
+    ggtitle(
+      paste0(
+        cluster_name,
+        " Species DERs FC Comparisons\nKruskal–Wallis p = ",
+        signif(kw$p.value, 3)
+      )
+    ) +
+    coord_cartesian(ylim = c(0, 5)) +
+    theme(
+      plot.title = element_text(size = rel(1.3), hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text.x = element_text(size = 8, angle = 15)
+    )
+
+  return(p)
+}
+```
+
+```{r AbsFC_Plot_Function_sig_No4, include = FALSE}
+plot_cluster_absfc_sig_No4 <- function(gene_vector, cluster_name, top_table) {
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "H_Day02","H_Day25","H_Day515","H_Day1530","C_Day02","C_Day25","C_Day515","C_Day1530"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+  
+  # Global test across comparisons
+  kw <- kruskal.test(AbsFC ~ Comparisons, data = df)
+  
+  pw_kw <-pairwise.wilcox.test(
+    df$AbsFC,
+    df$Comparisons,
+    p.adjust.method = "BH")
+  
+  print(pw_kw)
+
+  p <- ggplot(df, aes(x = Comparisons, y = AbsFC)) +
+    geom_boxplot(aes(fill = Comparisons)) +
+    theme_bw() +
+    xlab(" ") +
+    ylab("AbslogFC") +
+    ggtitle(
+      paste0(
+        cluster_name,
+        " H3K27ac AbsFC Comparisons\nKruskal–Wallis p = ",
+        signif(kw$p.value, 3)
+      )
+    ) +
+  coord_cartesian(ylim = c(0, 5)) +
+    theme(
+      plot.title = element_text(size = rel(1.3), hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text.x = element_text(size = 8, angle = 15)
+    )
+
+  return(p)
+
+
+}
+```
+
+
+```{r AbsFC_Plot_Function_Trajectory_sig, include = FALSE}
+
+plot_cluster_absfc_sig_trajectory_No4 <- function(gene_vector, cluster_name, top_table) {
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "H_Day02","H_Day25","H_Day515","H_Day1530","C_Day02","C_Day25","C_Day515","C_Day1530"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$absfc,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+  p <- ggplot(df, aes(x = Comparisons, y = absfc)) +
+    geom_boxplot(aes(fill = Comparisons)) +
+    theme_bw() +
+    xlab(" ") +
+    ylab("logFC") +
+    ggtitle(
+      paste0(
+        cluster_name,
+        " Trajectory DEGs FC Comparisons\nKruskal–Wallis p = ",
+        signif(kw$p.value, 3)
+      )
+    ) +
+    coord_cartesian(ylim = c(0, 5)) +
+    theme(
+      plot.title = element_text(size = rel(1.3), hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text.x = element_text(size = 8, angle = 15)
+    )
+
+  return(p)
+}
+```
+
+```{r FC_Plot_Function_Trajectory_sig, include = FALSE}
+
+plot_cluster_fc_sig_trajectory_No4 <- function(gene_vector, cluster_name, top_table) {
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "H_Day02","H_Day25","H_Day515","H_Day1530","C_Day02","C_Day25","C_Day515","C_Day1530"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$logFC,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+  p <- ggplot(df, aes(x = Comparisons, y = logFC)) +
+    geom_boxplot(aes(fill = Comparisons)) +
+    theme_bw() +
+    xlab(" ") +
+    ylab("logFC") +
+    ggtitle(
+      paste0(
+        cluster_name,
+        " Trajectroy DEG FC Comparisons\nKruskal–Wallis p = ",
+        signif(kw$p.value, 3)
+      )
+    ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    theme(
+      plot.title = element_text(size = rel(1.3), hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text.x = element_text(size = 8, angle = 15)
+    )
+
+  return(p)
+}
+
+```
+
+```{r FC_Plot_Function_Interaction_sig, include = FALSE}
+
+plot_cluster_fc_sig_interaction_No4 <- function(gene_vector, cluster_name, top_table) {
+
+  df <- top_table %>%
+    dplyr::filter(Gene %in% gene_vector) %>%
+    mutate(Comparisons = factor(Comparisons, levels = c(
+      "H_Day02","H_Day25","H_Day515","H_Day1530","C_Day02","C_Day25","C_Day515","C_Day1530"
+    )))
+
+  cat(cluster_name, ":", nrow(df), "rows,",
+      length(unique(df$Gene)), "unique genes\n")
+
+  # ✅ Skip if no data
+  if (nrow(df) == 0) {
+    message(cluster_name, ": no data — skipping")
+    return(NULL)
+  }
+
+  # ✅ Skip if only one comparison present
+  if (length(unique(df$Comparisons)) < 2) {
+    message(cluster_name, ": only one comparison — skipping stats")
+    return(NULL)
+  }
+
+  # Stats
+  kw <- kruskal.test(logFC ~ Comparisons, data = df)
+
+  pw_kw <- pairwise.wilcox.test(
+    df$logFC,
+    df$Comparisons,
+    p.adjust.method = "BH"
+  )
+
+  print(pw_kw)
+
+  p <- ggplot(df, aes(x = Comparisons, y = logFC)) +
+    geom_boxplot(aes(fill = Comparisons)) +
+    theme_bw() +
+    xlab(" ") +
+    ylab("logFC") +
+    ggtitle(
+      paste0(
+        cluster_name,
+        " Trajectroy DEG FC Comparisons\nKruskal–Wallis p = ",
+        signif(kw$p.value, 3)
+      )
+    ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    theme(
+      plot.title = element_text(size = rel(1.3), hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text.x = element_text(size = 8, angle = 15)
+    )
+
+  return(p)
+}
+
+```
+
+```{r get_directional_genes, include = FALSE}
+
+get_fc_directions <- function(traj_label, coef_name, comparison_label,
+                              top_table_all, fit_obj, p_cutoff = 0.05, gene_set = NULL) {
+
+  # ---------------------------
+  # trajectory FC data
+  # ---------------------------
+  df_fc <- top_table_all %>%
+    dplyr::filter(
+      Comparisons %in% c(
+        paste0("H_", comparison_label),
+        paste0("C_", comparison_label)
+      )
+    )
+
+  df_dir <- df_fc %>%
+    dplyr::mutate(Species = ifelse(grepl("^H_", Comparisons), "H", "C")) %>%
+    dplyr::group_by(Gene, Species) %>%
+    dplyr::summarise(logFC = mean(logFC, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = Species, values_from = logFC) %>%
+    dplyr::filter(!is.na(H), !is.na(C)) %>%
+    dplyr::distinct(Gene, .keep_all = TRUE)
+
+  # ---------------------------
+  # KEY FILTER: DEGs in BOTH species
+  # ---------------------------
+  if (!is.null(gene_set)) {
+    df_dir <- df_dir %>%
+      dplyr::filter(Gene %in% gene_set)
+  }
+
+  # ---------------------------
+  # direction classification
+  # ---------------------------
+  df_combo <- df_dir %>%
+    dplyr::mutate(
+      direction = dplyr::case_when(
+        H > 0 & C < 0 ~ "H_pos_C_neg",
+        H < 0 & C > 0 ~ "H_neg_C_pos",
+        H > 0 & C > 0 ~ "Both_pos",
+        H < 0 & C < 0 ~ "Both_neg",
+        TRUE ~ "Other"
+      ),
+      direction_group = dplyr::case_when(
+        H * C > 0 ~ "Same_direction",
+        H * C < 0 ~ "Opposite_direction",
+        TRUE ~ "Other"
+      )
+    )
+
+  # ---------------------------
+  # output
+  # ---------------------------
+  list(
+    all = df_combo,
+    H_pos_C_neg = dplyr::filter(df_combo, direction == "H_pos_C_neg"),
+    H_neg_C_pos = dplyr::filter(df_combo, direction == "H_neg_C_pos"),
+    Both_pos = dplyr::filter(df_combo, direction == "Both_pos"),
+    Both_neg = dplyr::filter(df_combo, direction == "Both_neg"),
+
+    Same_direction = dplyr::filter(df_combo, direction_group == "Same_direction"),
+    Opposite_direction = dplyr::filter(df_combo, direction_group == "Opposite_direction"),
+
+    Other = dplyr::filter(df_combo, direction == "Other"),
+
+    n_sig = length(gene_set)
+  )
+}
+```
+
+```{r get_directional_genes_HvC, include = FALSE}
+
+get_fc_directions_HvC <- function(traj_label, coef_name, comparison_label,
+                                 top_table_all, fit_obj, p_cutoff = 0.05) {
+
+  # ---------------------------
+  # DE genes
+  # ---------------------------
+  tt <- topTable(fit_obj, coef = coef_name, number = Inf)
+
+  sig_tt <- tt %>%
+    dplyr::filter(adj.P.Val < p_cutoff) %>%
+    tibble::rownames_to_column("Gene") %>%
+    dplyr::distinct(Gene, .keep_all = TRUE)
+
+  # ---------------------------
+  # HvC FC data
+  # ---------------------------
+  df_fc <- top_table_all %>%
+    dplyr::filter(Comparisons == comparison_label) %>%
+    dplyr::distinct(Gene, .keep_all = TRUE)
+
+  # ---------------------------
+  # classify direction
+  # ---------------------------
+  df_combo <- df_fc %>%
+  dplyr::inner_join(sig_tt, by = "Gene") %>%
+  dplyr::mutate(
+    direction = dplyr::case_when(
+      logFC.x > 0 ~ "Human_higher",
+      logFC.x < 0 ~ "Chimp_higher",
+      TRUE ~ "No_difference"
+    ),
+    magnitude = abs(logFC.x)
+  )
+
+  # ---------------------------
+  # output
+  # ---------------------------
+  list(
+    all = df_combo,
+    Human_higher = dplyr::filter(df_combo, direction == "Human_higher"),
+    Chimp_higher = dplyr::filter(df_combo, direction == "Chimp_higher"),
+    n_sig = nrow(sig_tt)
+  )
+}
+```
+
+```{r go_enrichment}
+Enrich_Go_sets <- function(gene_sets, v) {
+
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+  library(dplyr)
+
+  # -----------------------------
+  # Universe (FIXED)
+  # -----------------------------
+  background_genes <- rownames(v$E) %>%
+    sub("\\..*", "", .)
+
+  # -----------------------------
+  # GO helper
+  # -----------------------------
+  run_go <- function(genes) {
+
+    genes <- unique(sub("\\..*", "", genes))
+
+    if (length(genes) < 10) return(NULL)
+
+    ego <- enrichGO(
+      gene          = genes,
+      universe      = background_genes,
+      OrgDb         = org.Hs.eg.db,
+      keyType       = "ENSEMBL",
+      ont           = "BP",
+      readable      = TRUE
+    )
+
+    if (is.null(ego)) return(NULL)
+
+    as.data.frame(ego)
+  }
+
+  # -----------------------------
+  # Run for each gene set
+  # -----------------------------
+  results <- lapply(gene_sets, function(df) {
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    run_go(df$Gene)
+  })
+
+  return(results)
+}
+```
+
+###Reproducible2
+
+####Stats
+
+```{r H3K27acSeq_DGE_Stats_Reproducible2, fig.height=7,fig.width=7}
+library(edgeR)
+
+counts_table <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
+metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+
+counts <- counts_table %>%
+  dplyr::select(!matches("Day4")) %>%
+  dplyr::select(-contains("C3647_Day30")) %>%
+  dplyr::select(-contains("C40210_Day15")) %>%
+  dplyr::select(-contains("C3649_Day4")) %>%
+  dplyr::select(-contains("C3649_Day0")) %>%
+  dplyr::select(-contains("C40280_Day2")) %>%
+  dplyr::select(-contains("H24280_Day2"))
+
+metadata <- metadata %>%
+  filter(Timepoint != "Day4") %>%
+  filter(SampleName != "C3647_Day30") %>%
+  filter(SampleName != "C40210_Day15") %>%
+  filter(SampleName != "C3649_Day4") %>%
+  filter(SampleName != "H24280_Day2") %>%
+  filter(SampleName != "C3649_Day0") %>%
+  filter(SampleName != "C40280_Day2") %>%
+  filter(SampleName != "H20682R_Day0") %>%
+  filter(SampleName != "H20682R_Day2") %>%
+  filter(SampleName != "H20682R_Day5") %>%
+  filter(SampleName != "H20682R_Day30")
+
+counts_norep <- counts %>%
+  dplyr::select(-(contains("R")))
+
+
+#create DGEList object
+dge <- DGEList(counts = counts_norep)
+dge$samples$group <- factor(metadata$Cond)
+
+dim(dge)
+dge$samples
+
+metadata$Species <- factor(
+  metadata$Species,
+  levels = c("C", "H")   # Chimp baseline
+)
+
+ metadata$Timepoint <- factor(
+   metadata$Timepoint,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+design_int <- model.matrix(~ Species * Timepoint,
+                           data =  metadata)
+
+colnames(design_int)
+colnames(design_int) <- make.names(colnames(design_int))
+
+library(edgeR)
+
+logCPM <- cpm(dge, log = TRUE, prior.count = 2)
+
+summary(rowMeans(logCPM))
+
+hist(
+    rowMeans(logCPM),
+    breaks = 100,
+    main = "Mean log2CPM across peaks - Reproducible2",
+    xlab = "Mean log2CPM"
+)
+
+cpm_mat <- cpm(dge)
+
+support <- rowSums(cpm_mat > 1)
+
+summary(support)
+
+table(support)
+
+quantile(rowMeans(cpm_mat),
+         probs=c(0,0.01,0.05,0.1,0.25,0.5,0.75,0.9,0.95,0.99,1))
+
+
+support <- rowSums(cpm_mat > 1)
+
+hist(
+    support,
+    breaks = 65,
+    main = "Peak reproducibility after CPM threshold - Reproducible 2",
+    xlab = "Number of samples with CPM > 1"
+)
+
+cpm_mat <- cpm(dge)
+
+data.frame(
+  Filter = c(
+    "All",
+    "Mean CPM > 1",
+    "Mean CPM > 2",
+    "Mean CPM > 5"
+  ),
+  Peaks = c(
+    nrow(cpm_mat),
+    sum(rowMeans(cpm_mat) > 1),
+    sum(rowMeans(cpm_mat) > 2),
+    sum(rowMeans(cpm_mat) > 5)
+  )
+)
+```
+
+```{r H3K27acSeq_DGE_Differential_Data_Reproducible2}
+counts_table <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
+metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+
+counts <-  counts_table %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <-  metadata %>%
+  filter(Timepoint!="Day4")
+
+metadata <- metadata %>% 
+  filter(!grepl("R", Individual))
+
+metadata$dgelist <- c(rep(c("Human_Day0","Human_Day2","Human_Day5","Human_Day15","Human_Day30"),7),rep(c("Chimp_Day0","Chimp_Day2","Chimp_Day5","Chimp_Day15","Chimp_Day30"),7))
+
+metadata <- metadata%>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+counts_norep <- counts %>%
+  dplyr::select(-(contains("R")))
+
+
+# #create DGEList object
+# dge <- DGEList(counts = counts_norep)
+# dge$samples$group <- factor(metadata$dgelist)
+# dge <- calcNormFactors(dge, method = "TMM")
+
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+dge$samples
+
+dim(dge)
+dge$samples
+
+metadata$Species <- factor(
+  metadata$Species,
+  levels = c("C", "H")   # Chimp baseline
+)
+
+ metadata$Timepoint <- factor(
+   metadata$Timepoint,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+design_int <- model.matrix(~ Species * Timepoint,
+                           data =  metadata)
+
+colnames(design_int)
+colnames(design_int) <- make.names(colnames(design_int))
+
+# # Step 1: voom first
+# v1 <- voom(dge, design_int, plot = TRUE)
+# 
+# v1 <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# 
+# # Step 2: estimate duplicate correlation on voom-transformed data
+# corfit <- duplicateCorrelation(v1, design_int, block = metadata$Individual)
+# corfit.correlation <- corfit$consensus.correlation
+# 
+# # Step 3: voom again including correlation
+# v2 <- voom(dge, design_int, plot = TRUE,
+#            block = metadata$Individual,
+#            correlation = corfit.correlation)
+# 
+# # Step 4: fit linear model
+# fit <- lmFit(v2, design_int, block = metadata$Individual, correlation = corfit.correlation)
+# fit <- eBayes(fit)
+
+v2 <- readRDS("data/DGE/v2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit <- readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+pal <- rainbow(length(unique(metadata$Timepoint)))
+day <- metadata$Timepoint
+plotDensities(v2, col = pal[as.numeric(day)], legend = FALSE)
+
+human_idx <- metadata$Species == "H"
+chimp_idx <- metadata$Species == "C"
+
+pal <- rainbow(length(unique(metadata$Timepoint)))
+
+# Human
+plotDensities(
+  v2[, human_idx],
+  col = pal[as.numeric(as.factor(metadata$Timepoint[human_idx]))],
+  main = "",
+  legend = FALSE,
+  axes = FALSE
+)
+
+axis(1)
+axis(2)
+mtext("log2 CPM", side = 1, line = 2)
+
+title("Human")
+  legend(
+      "right",
+      legend = metadata$Individual[human_idx],  # or Timepoint, etc.
+      col = rainbow(sum(human_idx)),
+      lty = 1,
+     cex = 0.7
+    )
+
+# Chimp
+plotDensities(
+  v2[, chimp_idx],
+  col = pal[as.numeric(as.factor(metadata$Timepoint[human_idx]))],
+  main = "",
+  legend = FALSE,
+  axes = FALSE
+)
+
+axis(1)
+axis(2)
+mtext("log2 CPM", side = 1, line = 2)
+
+title("Chimp")
+  legend(
+      "right",
+      legend = metadata$Individual[chimp_idx],  # or Timepoint, etc.
+      col = rainbow(sum(chimp_idx)),
+      lty = 1,
+     cex = 0.7
+    )
+
+species_levels <- unique(metadata$Species)
+day_levels <- unique(metadata$Timepoint)
+
+for (sp in species_levels) {
+  for (day in day_levels) {
+
+    idx <- metadata$Species == sp &
+           metadata$Timepoint == day
+
+    if (sum(idx) > 0) {
+
+      cols <- rainbow(sum(idx))
+
+      plotDensities(
+        v2[, idx],
+        col = cols,
+        main = paste(sp, day),
+        legend = FALSE,
+        axes = FALSE
+      )
+
+      axis(1)
+      axis(2)
+      mtext("log2 CPM", side = 1, line = 2)
+
+      legend(
+        "right",
+        legend = metadata$Individual[idx],
+        col = cols,
+        lty = 1,
+        cex = 0.7
+      )
+    }
+  }
+}
+
+# saveRDS(dge, "data/DGE/dge_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# saveRDS(design_int, "data/DGE/design_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# saveRDS(v1,"data/DGE/v1_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# saveRDS(v2,"data/DGE/v2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# saveRDS(fit, "data/DGE/fit_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Differential_Data_Model_Reproducible2}
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+design_int <- readRDS("data/DGE/design_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+v1 <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit <- readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+contrast_matrix <- makeContrasts(
+
+  # Species differences
+  HvC_Day0  = SpeciesH,
+  HvC_Day2  = SpeciesH + SpeciesH.TimepointDay2,
+  HvC_Day5  = SpeciesH + SpeciesH.TimepointDay5,
+  HvC_Day15 = SpeciesH + SpeciesH.TimepointDay15,
+  HvC_Day30 = SpeciesH + SpeciesH.TimepointDay30,
+  
+  #Trajectory differences
+  H_Day02 = TimepointDay2 + SpeciesH.TimepointDay2,
+  H_Day25 = TimepointDay5 + SpeciesH.TimepointDay5 - TimepointDay2 - SpeciesH.TimepointDay2,
+  H_Day515 = TimepointDay15 + SpeciesH.TimepointDay15 - TimepointDay5 - SpeciesH.TimepointDay5,
+  H_Day1530 = TimepointDay30 + SpeciesH.TimepointDay30 - TimepointDay15 - SpeciesH.TimepointDay15,
+  C_Day02 = TimepointDay2,
+  C_Day25 = TimepointDay5 - TimepointDay2,
+  C_Day515 = TimepointDay15 - TimepointDay5,
+  C_Day1530 = TimepointDay30 - TimepointDay15,
+  
+  # True interaction tests trajectory
+  Sig_Sp_inter_Traj02 = SpeciesH.TimepointDay2,
+  Sig_Sp_inter_Traj25 = SpeciesH.TimepointDay5 - SpeciesH.TimepointDay2,
+  Sig_Sp_inter_Traj515 = SpeciesH.TimepointDay15 - SpeciesH.TimepointDay5,
+  Sig_Sp_inter_Traj1530 = SpeciesH.TimepointDay30 - SpeciesH.TimepointDay15,
+  
+  levels = design_int
+)
+
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+plotSA(fit2, main = "H3K27ac Model")
+
+results_summary <- decideTests(fit2,
+                               adjust.method = "BH",
+                               p.value = 0.05)
+summary(results_summary)
+
+# saveRDS(fit2, "data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_Reproducible2}
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+#Create Human TopTable. using listapply, then you can pull specific comp using the $
+TopTables_H3K27ac_names <- colnames(fit2$coefficients) 
+
+TopTable_H3K27ac_All <- do.call(
+  rbind,
+  lapply(TopTables_H3K27ac_names,function(ct) {
+    
+    tt <- topTable(
+      fit2,
+      coef = ct,
+      number = Inf,
+      sort.by = "p"
+    )
+    
+    #add identifiers
+    tt$Gene <- rownames(tt)
+    tt$Comparisons <- ct
+    
+    tt
+  })
+)
+
+ComparisonNames <- unique(TopTable_H3K27ac_All$Comparisons)
+
+saveRDS(TopTable_H3K27ac_All, "data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+saveRDS(ComparisonNames, "data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+head(TopTable_H3K27ac_All)
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_VolcancoPlots_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+# Calculate global axis limits
+x_limits <- range(TopTable$logFC, na.rm = TRUE)
+y_limits <- range(-log10(TopTable$P.Value), na.rm = TRUE)
+
+plot <- list()
+
+for (n in ComparisonNames) {
+  data_n <- TopTable %>% 
+    dplyr::filter(Comparisons == n)
+  
+  plot[[n]] <- generate_volcano_plot(data_n, n) +
+    ggplot2::xlim(x_limits) +
+    ggplot2::ylim(y_limits)
+}
+
+# Print plots
+for (n in ComparisonNames) {
+  print(plot[[n]])
+}
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_Subsetting0.05_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- map(
+  ComparisonNames,
+  ~ {
+    df <- TopTable %>%
+      filter(Comparisons == paste0(.x))
+
+    list(
+      DEGs = df %>% filter(adj.P.Val < 0.05),
+      NonDEGs = df %>% filter(adj.P.Val >= 0.05)
+    )
+  }
+)
+
+
+names(H3K27ac_sets) <- paste0(ComparisonNames)
+
+# saveRDS(H3K27ac_sets, "data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+```
+
+####Species
+
+```{r H3K27acSeq_DGE_Species_FC_Reproducible2, fig.height=6, fig.width=10}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15","HvC_Day30"
+  ))
+
+SpeciesD0_genes <- unique(c(H3K27ac_sets$HvC_Day0$DEGs$Gene))
+SpeciesD2_genes <- unique(c(H3K27ac_sets$HvC_Day2$DEGs$Gene))
+SpeciesD5_genes <- unique(c(H3K27ac_sets$HvC_Day5$DEGs$Gene))
+SpeciesD15_genes <- unique(c(H3K27ac_sets$HvC_Day15$DEGs$Gene))
+SpeciesD30_genes <- unique(c(H3K27ac_sets$HvC_Day30$DEGs$Gene))
+
+cluster_lists <- list(
+ HvC_Day0  = SpeciesD0_genes,
+  HvC_Day2  = SpeciesD2_genes,
+  HvC_Day5  = SpeciesD5_genes,
+  HvC_Day15  = SpeciesD15_genes,
+ HvC_Day30  = SpeciesD30_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+Species_DEG_info <- list(
+  HvC_Day0 = list(coef = "HvC_Day0", comp = "HvC_Day0"),
+  HvC_Day2 = list(coef = "HvC_Day2", comp = "HvC_Day2"),
+  HvC_Day5 = list(coef ="HvC_Day5", comp = "HvC_Day5"),
+ HvC_Day15 = list(coef = "HvC_Day15", comp = "HvC_Day15"),
+ HvC_Day30 = list(coef = "HvC_Day30", comp = "HvC_Day30")
+)
+
+direction_results <- setNames(
+  lapply(names(Species_DEG_info), function(name) {
+
+    info <- Species_DEG_info[[name]]
+
+    get_fc_directions_HvC(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2
+    )
+
+  }),
+  names(Species_DEG_info)
+)
+
+# saveRDS(direction_results, "data/DGE/Species_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_FC_Reproducible2}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15",
+    "HvC_Day30"
+  ))
+
+aa <- unique(direction_results$HvC_Day0$all$Gene)
+ab <- unique(direction_results$HvC_Day0$Human_higher$Gene)
+ac <- unique(direction_results$HvC_Day0$Chimp_higher$Gene)
+
+ba <- unique(direction_results$HvC_Day2$all$Gene)
+bb <- unique(direction_results$HvC_Day2$Human_higher$Gene)
+bc <- unique(direction_results$HvC_Day2$Chimp_higher$Gene)
+
+da <- unique(direction_results$HvC_Day5$all$Gene)
+db <- unique(direction_results$HvC_Day5$Human_higher$Gene)
+dc <- unique(direction_results$HvC_Day5$Chimp_higher$Gene)
+
+ea <- unique(direction_results$HvC_Day15$all$Gene)
+eb <- unique(direction_results$HvC_Day15$Human_higher$Gene)
+ec <- unique(direction_results$HvC_Day15$Chimp_higher$Gene)
+
+fa <- unique(direction_results$HvC_Day30$all$Gene)
+fb <- unique(direction_results$HvC_Day30$Human_higher$Gene)
+fc <- unique(direction_results$HvC_Day30$Chimp_higher$Gene)
+
+
+cluster_lists <- list(
+  HvC_Day0_all = aa,
+  HvC_Day0_HumanHigher = ab,
+  HvC_Day0_ChimpHigher = ac,
+  
+  HvC_Day2_all = ba,
+  HvC_Day2_HumanHigher = bb,
+  HvC_Day2_ChimpHigher = bc,
+  
+  HvC_Day5_all = da,
+  HvC_Day5_HumanHigher = db,
+  HvC_Day5_ChimpHigher = dc,
+  
+  HvC_Day15_all = ea,
+  HvC_Day15_HumanHigher = eb,
+  HvC_Day15_ChimpHigher = ec,
+  
+  HvC_Day30_all = fa,
+  HvC_Day30_HumanHigher = fb,
+  HvC_Day30_ChimpHigher = fc
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_absFC_Reproducible2}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15",
+    "HvC_Day30"
+  ))
+
+aa <- unique(direction_results$HvC_Day0$all$Gene)
+ab <- unique(direction_results$HvC_Day0$Human_higher$Gene)
+ac <- unique(direction_results$HvC_Day0$Chimp_higher$Gene)
+
+ba <- unique(direction_results$HvC_Day2$all$Gene)
+bb <- unique(direction_results$HvC_Day2$Human_higher$Gene)
+bc <- unique(direction_results$HvC_Day2$Chimp_higher$Gene)
+
+da <- unique(direction_results$HvC_Day5$all$Gene)
+db <- unique(direction_results$HvC_Day5$Human_higher$Gene)
+dc <- unique(direction_results$HvC_Day5$Chimp_higher$Gene)
+
+ea <- unique(direction_results$HvC_Day15$all$Gene)
+eb <- unique(direction_results$HvC_Day15$Human_higher$Gene)
+ec <- unique(direction_results$HvC_Day15$Chimp_higher$Gene)
+
+fa <- unique(direction_results$HvC_Day30$all$Gene)
+fb <- unique(direction_results$HvC_Day30$Human_higher$Gene)
+fc <- unique(direction_results$HvC_Day30$Chimp_higher$Gene)
+
+
+cluster_lists <- list(
+  HvC_Day0_all = aa,
+  HvC_Day0_HumanHigher = ab,
+  HvC_Day0_ChimpHigher = ac,
+  
+  HvC_Day2_all = ba,
+  HvC_Day2_HumanHigher = bb,
+  HvC_Day2_ChimpHigher = bc,
+  
+  HvC_Day5_all = da,
+  HvC_Day5_HumanHigher = db,
+  HvC_Day5_ChimpHigher = dc,
+  
+  HvC_Day15_all = ea,
+  HvC_Day15_HumanHigher = eb,
+  HvC_Day15_ChimpHigher = ec,
+  
+  HvC_Day30_all = fa,
+  HvC_Day30_HumanHigher = fb,
+  HvC_Day30_ChimpHigher = fc
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+```{r H3K27acSeq_DGE_Species_DEGs_Reproducible2}
+library(dplyr)
+library(purrr)
+library(stringr)
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+hvcdays <- names(H3K27ac_sets)[str_detect(names(H3K27ac_sets), "^HvC_")]
+
+prop_df <- map_dfr(hvcdays, function(traj) {
+  
+  x <- H3K27ac_sets[[traj]]
+  
+  tibble(
+    trajectory = traj,
+    DEG = length(x$DEGs$Gene),
+    NonDEG = length(x$NonDEGs$Gene)
+  )
+})
+library(tidyr)
+
+prop_long <- prop_df %>%
+  pivot_longer(cols = c(DEG, NonDEG),
+               names_to = "type",
+               values_to = "count") %>%
+  group_by(trajectory) %>%
+  mutate(prop = count / sum(count)) %>%
+  ungroup()
+prop_long$trajectory <- factor(
+  prop_long$trajectory,
+  levels = c("HvC_Day0", "HvC_Day2", "HvC_Day5", "HvC_Day15", "HvC_Day30"),
+  labels = c("0", "2", "5", "15", "30")
+)
+library(ggplot2)
+
+ggplot(prop_long, aes(x = trajectory, y = prop, fill = type)) +
+  geom_col() +
+  theme_bw() +
+  labs(
+    x = "Time",
+    y = "Proportion of genes",
+    fill = "",
+    title = "HvC comparisons: DEG vs NonDEG composition"
+  )
+```
+
+
+```{r H3K27acSeq_DGE_Species_DEGs_Reproducible2_OverlappingVenn, fig.height=7,fig.width=7}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+timepoints <- c("Day0","Day2","Day5","Day15","Day30")
+
+df <- TopTable %>%
+  filter(str_detect(Comparisons, "^HvC_Day")) %>%
+  mutate(
+    Time = str_extract(Comparisons, "Day[0-9]+"),
+    DEG = adj.P.Val < 0.05
+  ) %>%
+  filter(DEG)
+
+genes_list <- list(
+  Day0  = df %>% filter(Time == "Day0")  %>% pull(Gene) %>% unique(),
+  Day2  = df %>% filter(Time == "Day2")  %>% pull(Gene) %>% unique(),
+  Day5  = df %>% filter(Time == "Day5")  %>% pull(Gene) %>% unique(),
+  Day15 = df %>% filter(Time == "Day15") %>% pull(Gene) %>% unique(),
+  Day30 = df %>% filter(Time == "Day30") %>% pull(Gene) %>% unique()
+)
+
+ggVennDiagram(genes_list, label = "count") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    axis.text = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Species_DEGs_Composition_Reproducible2}
+library(dplyr)
+library(stringr)
+
+df <- TopTable %>%
+  filter(str_detect(Comparisons, "^HvC_Day")) %>%
+  mutate(
+    Stage = str_extract(Comparisons, "Day[0-9]+"),
+    DEG = adj.P.Val < 0.05
+  ) %>%
+  filter(DEG)
+
+genes <- list(
+  Day0  = df %>% filter(Stage == "Day0")  %>% pull(Gene) %>% unique(),
+  Day2  = df %>% filter(Stage == "Day2")  %>% pull(Gene) %>% unique(),
+  Day5  = df %>% filter(Stage == "Day5")  %>% pull(Gene) %>% unique(),
+  Day15 = df %>% filter(Stage == "Day15") %>% pull(Gene) %>% unique(),
+  Day30 = df %>% filter(Stage == "Day30") %>% pull(Gene) %>% unique()
+)
+
+days <- names(genes)
+
+shared_all <- Reduce(intersect, genes)
+
+get_fate <- function(day) {
+
+  g <- genes[[day]]
+
+  specific <- setdiff(g, unlist(genes[names(genes) != day]))
+
+  shared_all_day <- intersect(g, shared_all)
+
+  shared_partial <- setdiff(
+    setdiff(g, specific),
+    shared_all_day
+  )
+
+  data.frame(
+    Day = day,
+    Specific = length(specific),
+    Shared_partial = length(shared_partial),
+    Shared_all = length(shared_all_day)
+  )
+}
+
+plot_df <- do.call(rbind, lapply(names(genes), get_fate))
+
+library(tidyr)
+
+plot_long <- plot_df %>%
+  pivot_longer(
+    cols = c(Specific, Shared_partial, Shared_all),
+    names_to = "Category",
+    values_to = "Count"
+  )
+
+plot_long$Day <- factor(
+  plot_long$Day,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+library(ggplot2)
+
+ggplot(plot_long, aes(x = Day, y = Count, fill = Category)) +
+  geom_col() +
+    scale_fill_manual(values = c(
+    "Specific" = "#D55E00",
+    "Shared_partial" = "#0072B2",
+    "Shared_all" = "#009E73"
+  )) +
+  theme_bw() +
+  labs(
+    x = "Developmental stage",
+    y = "Number of DEGs",
+    fill = "",
+    title = "Fate of HvC DEGs across development"
+  )
+
+library(dplyr)
+library(tidyr)
+
+plot_long_prop <- plot_df %>%
+  pivot_longer(
+    cols = c(Specific, Shared_partial, Shared_all),
+    names_to = "Category",
+    values_to = "Count"
+  ) %>%
+  group_by(Day) %>%
+  mutate(
+    Prop = Count / sum(Count)
+  ) %>%
+  ungroup()
+
+plot_long_prop$Day <- factor(
+  plot_long_prop$Day,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+library(ggplot2)
+
+ggplot(plot_long_prop, aes(x = Day, y = Prop, fill = Category)) +
+  geom_col() +
+  
+  scale_fill_manual(values = c(
+    "Specific" = "#D55E00",
+    "Shared_partial" = "#0072B2",
+    "Shared_all" = "#009E73"
+  )) +
+  
+  theme_bw() +
+  labs(
+    x = "Developmental stage",
+    y = "Proportion of DEGs",
+    fill = "",
+    title = "Fate of HvC DEGs across development (normalized)"
+  )
+
+
+```
+
+
+####Trajectory
+
+```{r H3K27acSeq_DGE_Trajectory_FC_Reproducible2, fig.height=6, fig.width=10}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+Traj02_genes <- intersect(H3K27ac_sets$H_Day02$DEGs$Gene,H3K27ac_sets$C_Day02$DEGs$Gene)
+Traj25_genes <- intersect(H3K27ac_sets$H_Day25$DEGs$Gene,H3K27ac_sets$C_Day25$DEGs$Gene)
+Traj515_genes <- intersect(H3K27ac_sets$H_Day515$DEGs$Gene,H3K27ac_sets$C_Day515$DEGs$Gene)
+Traj1530_genes <- intersect(H3K27ac_sets$H_Day1530$DEGs$Gene,H3K27ac_sets$C_Day1530$DEGs$Gene)
+
+length(Traj02_genes)
+length(Traj25_genes)
+length(Traj515_genes)
+length(Traj1530_genes)
+
+cluster_lists <- list(
+ Traj02_genes  = Traj02_genes,
+  Traj25_genes  = Traj25_genes,
+  Traj515_genes  = Traj515_genes,
+  Traj1530_genes  = Traj1530_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+```
+
+```{r H3K27acSeq_DGE_Trajectory_Directionality_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+
+traj_info <- list(
+  Traj02_genes = list(coef = "H_Day02", comp = "Day02"),
+  Traj25_genes = list(coef = "H_Day25", comp = "Day25"),
+  Traj515_genes = list(coef ="H_Day515", comp = "Day515"),
+ Traj1530_genes = list(coef = "H_Day1530", comp = "Day1530")
+)
+
+direction_results <- setNames(
+  lapply(names(traj_info), function(name) {
+
+    info <- traj_info[[name]]
+
+    get_fc_directions(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2,
+      gene_set = cluster_lists[[name]]
+    )
+
+  }),
+  names(traj_info)
+)
+
+# saveRDS(direction_results, "data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Trajectory_Directionality_FC_Reproducible2}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+direction_results <- readRDS("data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+aa <- unique(direction_results$Traj02_genes$all$Gene)
+ab <- unique(direction_results$Traj02_genes$H_pos_C_neg$Gene)
+ac <- unique(direction_results$Traj02_genes$H_neg_C_pos$Gene)
+ad <- unique(direction_results$Traj02_genes$Both_pos$Gene)
+ae <- unique(direction_results$Traj02_genes$Both_neg$Gene)
+af <- unique(direction_results$Traj02_genes$Same_direction$Gene)
+ag <- unique(direction_results$Traj02_genes$Opposite_direction$Gene)
+
+ba <- unique(direction_results$Traj25_genes$all$Gene)
+bb <- unique(direction_results$Traj25_genes$H_pos_C_neg$Gene)
+bc <- unique(direction_results$Traj25_genes$H_neg_C_pos$Gene)
+bd <- unique(direction_results$Traj25_genes$Both_pos$Gene)
+be <- unique(direction_results$Traj25_genes$Both_neg$Gene)
+bf <- unique(direction_results$Traj25_genes$Same_direction$Gene)
+bg <- unique(direction_results$Traj25_genes$Opposite_direction$Gene)
+
+da <- unique(direction_results$Traj515_genes$all$Gene)
+db <- unique(direction_results$Traj515_genes$H_pos_C_neg$Gene)
+dc <- unique(direction_results$Traj515_genes$H_neg_C_pos$Gene)
+dd <- unique(direction_results$Traj515_genes$Both_pos$Gene)
+de <- unique(direction_results$Traj515_genes$Both_neg$Gene)
+df <- unique(direction_results$Traj515_genes$Same_direction$Gene)
+dg <- unique(direction_results$Traj515_genes$Opposite_direction$Gene)
+
+ea <- unique(direction_results$Traj1530_genes$all$Gene)
+eb <- unique(direction_results$Traj1530_genes$H_pos_C_neg$Gene)
+ec <- unique(direction_results$Traj1530_genes$H_neg_C_pos$Gene)
+ed <- unique(direction_results$Traj1530_genes$Both_pos$Gene)
+ee <- unique(direction_results$Traj1530_genes$Both_neg$Gene)
+ef <- unique(direction_results$Traj1530_genes$Same_direction$Gene)
+eg <- unique(direction_results$Traj1530_genes$Opposite_direction$Gene)
+
+cluster_lists <- list(
+  Traj02_All = aa,
+  Traj02_HumanPos = ab,
+  Traj02_ChimpPos = ac,
+  Traj02_Both_pos = ad,
+  Traj02_Both_neg = ae,
+  Traj02_Same_direction = af,
+  Traj02_Opposite_direction = ag,
+  
+  Traj25_All = ba,
+  Traj25_HumanPos = bb,
+  Traj25_ChimpPos = bc,
+  Traj25_Both_pos = bd,
+  Traj25_Both_neg = be,
+  Traj25_Same_direction = bf,
+  Traj25_Opposite_direction = bg,
+ 
+ 
+  Traj515_All = da,
+  Traj515_HumanPos = db,
+  Traj515_ChimpPos = dc,
+  Traj515_Both_pos = dd,
+  Traj515_Both_neg = de,
+  Traj515_Same_direction = df,
+  Traj515_Opposite_direction = dg,
+ 
+  Traj1530_All = ea,
+  Traj1530_HumanPos = eb,
+  Traj1530_ChimpPos = ec,
+  Traj1530_Both_pos = ed,
+  Traj1530_Both_neg = ee,
+  Traj1530_Same_direction = ef,
+  Traj1530_Opposite_direction = eg
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_2_0_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+H_comp <- "H_Day02"
+C_comp <- "C_Day02"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day02$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day02$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_4_2_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+H_comp <- "H_Day25"
+C_comp <- "C_Day25"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day25$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day25$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_15_5_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+
+H_comp <- "H_Day515"
+C_comp <- "C_Day515"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+max_val <- max(abs(c(x_limits, y_limits)))
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day515$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day515$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_30_15_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+H_comp <- "H_Day1530"
+C_comp <- "C_Day1530"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+max_val <- max(abs(c(x_limits, y_limits)))
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day1530$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day1530$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r Trajectory_plotting_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+df_all <- TopTable %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  
+  mutate(
+    species = ifelse(str_starts(Comparisons, "H_"), "H", "C"),
+    trajectory = str_remove(Comparisons, "^[HC]_")
+  ) %>%
+  
+  group_by(Gene, species, trajectory) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  
+  pivot_wider(names_from = species, values_from = logFC) %>%
+  
+  filter(!is.na(H), !is.na(C))
+
+library(ggplot2)
+
+df_all$trajectory <- df_all$trajectory <- factor(
+  df_all$trajectory,
+  levels = c("Day02", "Day25", "Day515","Day1530")
+)
+
+ggplot(df_all, aes(x = H, y = C, color = trajectory)) +
+  geom_point(alpha = 0.7) +
+  
+  # one regression line per trajectory (same color as points)
+  geom_smooth(method = "lm", se = FALSE, fullrange = TRUE)+
+  
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  
+  theme_bw() +
+  labs(
+    x = "Human logFC",
+    y = "Chimp logFC",
+    color = "Trajectory",
+    title = "All Trajectories Combined"
+  )
+
+df_stats <- df_all %>%
+  group_by(trajectory) %>%
+  do({
+    fit <- lm(C ~ H, data = .)
+    data.frame(
+      r2 = summary(fit)$r.squared,
+      p = summary(fit)$coefficients[2, "Pr(>|t|)"]
+    )
+  })
+```
+
+```{r H3K27acSeq_DGE_TrajectoryDEGs_Composition_Reproducible2}
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+design_int <- readRDS("data/DGE/design_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+v1 <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit <-readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit2 <-readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+direction_results <- readRDS("data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+  
+traj_levels <- c("H_Day02","H_Day25","H_Day515","H_Day1530",
+                 "C_Day02","C_Day25","C_Day515","C_Day1530")
+
+df <- TopTable %>%
+  dplyr::filter(Comparisons %in% traj_levels)
+
+df <- df %>%
+  dplyr::mutate(
+    Species = ifelse(grepl("^H", Comparisons), "Human", "Chimp"),
+    Stage = sub(".*_(Day[0-9]+)", "\\1", Comparisons),
+    DEG = adj.P.Val < 0.05
+  )
+
+df_deg <- df %>%
+  dplyr::filter(DEG)
+
+library(dplyr)
+
+df_deg2 <- df_deg %>%
+  group_by(Gene, Stage, Species) %>%
+  summarise(.groups = "drop")
+
+df_overlap <- df_deg2 %>%
+  tidyr::pivot_wider(
+    names_from = Species,
+    values_from = Gene,
+    values_fn = length,
+    values_fill = 0
+  )
+
+df_flags <- df_deg2 %>%
+  mutate(flag = TRUE) %>%
+  tidyr::pivot_wider(
+    names_from = Species,
+    values_from = flag,
+    values_fill = FALSE
+  ) %>%
+  dplyr::mutate(
+    category = case_when(
+      Human & Chimp ~ "Shared",
+      Human ~ "Human only",
+      Chimp ~ "Chimp only"
+    )
+  )
+
+plot_df <- df_flags %>%
+  group_by(Stage, category) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Stage) %>%
+  mutate(prop = n / sum(n))
+
+plot_df$Stage <- factor(
+  plot_df$Stage,
+  levels = c("Day02", "Day25", "Day515", "Day1530")
+)
+
+library(ggpattern)
+
+ggplot(plot_df, aes(x = Stage, y = n, fill = category)) +
+
+  geom_col_pattern(
+    aes(pattern = category),
+    colour = "black",
+    pattern_colour = "black",
+    pattern_fill = "white",
+    pattern_density = 0.4,
+    pattern_spacing = 0.02
+  ) +
+
+  scale_fill_manual(values = c(
+    "Shared" = "grey70",
+    "Human only" = "black",
+    "Chimp only" = "white"
+  )) +
+
+  scale_pattern_manual(values = c(
+    "Shared" = "stripe",
+    "Human only" = "none",
+    "Chimp only" = "none"
+  )) +
+
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Developmental Stage",
+    y = "Count",
+    fill = "",
+    pattern = ""
+  )
+
+ggplot(plot_df, aes(x = Stage, y = prop, fill = category)) +
+
+  geom_col_pattern(
+    aes(pattern = category),
+    colour = "black",
+    pattern_colour = "black",
+    pattern_fill = "white",
+    pattern_density = 0.4,
+    pattern_spacing = 0.02
+  ) +
+
+  scale_fill_manual(values = c(
+    "Shared" = "grey70",
+    "Human only" = "black",
+    "Chimp only" = "white"
+  )) +
+
+  scale_pattern_manual(values = c(
+    "Shared" = "stripe",
+    "Human only" = "none",
+    "Chimp only" = "none"
+  )) +
+
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Developmental Stage",
+    y = "Proportion of DERs",
+    fill = "",
+    pattern = ""
+  )
+```
+
+####Interactions
+
+```{r H3K27acSeq_DGE_Interaction_FC_Reproducible2}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+TopTable_H3K27ac_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+Inter_02_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj02$DEGs$Gene)
+Inter_25_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj25$DEGs$Gene)
+Inter_515_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj515$DEGs$Gene)
+Inter_1530_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj1530$DEGs$Gene)
+
+cluster_lists <- list(
+  Inter_02_genes  = Inter_02_genes,
+  Inter_25_genes  = Inter_25_genes,
+  Inter_515_genes  = Inter_515_genes,
+  Inter_1530_genes  = Inter_1530_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_H3K27ac_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Interaction_Directionality_Reproducible2}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+traj_info <- list(
+  InterTraj02 = list(coef = "Sig_Sp_inter_Traj02", comp = "Day02"),
+  InterTraj25 = list(coef = "Sig_Sp_inter_Traj25", comp = "Day25"),
+  InterTraj515 = list(coef = "Sig_Sp_inter_Traj515", comp = "Day515"),
+  InterTraj1530 = list(coef = "Sig_Sp_inter_Traj1530", comp = "Day1530")
+)
+
+cluster_lists <- list(
+  InterTraj02  = Inter_02_genes,
+  InterTraj25  = Inter_25_genes,
+  InterTraj515 = Inter_515_genes,
+  InterTraj1530 = Inter_1530_genes
+)
+
+direction_results <- setNames(
+  lapply(names(traj_info), function(name) {
+
+    info <- traj_info[[name]]
+
+    get_fc_directions(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2,
+      gene_set = cluster_lists[[name]]
+    )
+
+  }),
+  names(traj_info)
+)
+
+# saveRDS(direction_results, "data/DGE/Interaction_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Interaction_Directionality_FC_Reproducible2, fig.height=7,fig.width=7}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/Interaction_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_H3K27ac_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+aa <- unique(H3K27ac_sets$InterTraj02$all$Gene)
+ab <- unique(H3K27ac_sets$InterTraj02$H_pos_C_neg$Gene)
+ac <- unique(H3K27ac_sets$InterTraj02$H_neg_C_pos$Gene)
+ad <- unique(H3K27ac_sets$InterTraj02$Both_pos$Gene)
+ae <- unique(H3K27ac_sets$InterTraj02$Both_neg$Gene)
+af <- unique(H3K27ac_sets$InterTraj02$Same_direction$Gene)
+ag <- unique(H3K27ac_sets$InterTraj02$Opposite_direction$Gene)
+
+ba <- unique(H3K27ac_sets$InterTraj25$all$Gene)
+bb <- unique(H3K27ac_sets$InterTraj25$H_pos_C_neg$Gene)
+bc <- unique(H3K27ac_sets$InterTraj25$H_neg_C_pos$Gene)
+bd <- unique(H3K27ac_sets$InterTraj25$Both_pos$Gene)
+be <- unique(H3K27ac_sets$InterTraj25$Both_neg$Gene)
+bf <- unique(H3K27ac_sets$InterTraj25$Same_direction$Gene)
+bg <- unique(H3K27ac_sets$InterTraj25$Opposite_direction$Gene)
+
+
+da <- unique(H3K27ac_sets$InterTraj515$all$Gene)
+db <- unique(H3K27ac_sets$InterTraj515$H_pos_C_neg$Gene)
+dc <- unique(H3K27ac_sets$InterTraj515$H_neg_C_pos$Gene)
+dd <- unique(H3K27ac_sets$InterTraj515$Both_pos$Gene)
+de <- unique(H3K27ac_sets$InterTraj515$Both_neg$Gene)
+df <- unique(H3K27ac_sets$InterTraj515$Same_direction$Gene)
+dg <- unique(H3K27ac_sets$InterTraj515$Opposite_direction$Gene)
+
+ea <- unique(H3K27ac_sets$InterTraj1530$all$Gene)
+eb <- unique(H3K27ac_sets$InterTraj1530$H_pos_C_neg$Gene)
+ec <- unique(H3K27ac_sets$InterTraj1530$H_neg_C_pos$Gene)
+ed <- unique(H3K27ac_sets$InterTraj1530$Both_pos$Gene)
+ee <- unique(H3K27ac_sets$InterTraj1530$Both_neg$Gene)
+ef <- unique(H3K27ac_sets$InterTraj1530$Same_direction$Gene)
+eg <- unique(H3K27ac_sets$InterTraj1530$Opposite_direction$Gene)
+
+cluster_lists <- list(
+  Inter02_All = aa,
+  Inter02_HumanPos = ab,
+  Inter02_ChimpPos = ac,
+  Inter02_Both_pos = ad,
+  Inter02_Both_neg = ae,
+  Inter02_Same_direction = af,
+  Inter02_Opposite_direction = ag,
+  
+  Inter25_All = ba,
+  Inter25_HumanPos = bb,
+  Inter25_ChimpPos = bc,
+  Inter25_Both_pos = bd,
+  Inter25_Both_neg = be,
+  Inter25_Same_direction = bf,
+  Inter25_Opposite_direction = bg,
+
+  
+  Inter515_All = da,
+  Inter515_HumanPos = db,
+  Inter515_ChimpPos = dc,
+  Inter515_Both_pos = dd,
+  Inter515_Both_neg = de,
+  Inter515_Same_direction = df,
+  Inter515_Opposite_direction = dg,
+  
+  
+  Inter1530_All = ea,
+  Inter1530_HumanPos = eb,
+  Inter1530_ChimpPos = ec,
+  Inter1530_Both_pos = ed,
+  Inter1530_Both_neg = ee,
+  Inter1530_Same_direction = ef,
+  Inter1530_Opposite_direction = eg
+  
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_interaction_No4(cluster_lists[[clust_name]], clust_name, TopTable_H3K27ac_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+###Reproducible3
+####Stats
+```{r H3K27acSeq_DGE_Interaction_Stats_Reproducible3} 
+library(edgeR)
+
+counts_table <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible3_fc.RDS")
+metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+
+counts <- counts_table %>%
+  dplyr::select(!matches("Day4")) %>%
+  dplyr::select(-contains("C3647_Day30")) %>%
+  dplyr::select(-contains("C40210_Day15")) %>%
+  dplyr::select(-contains("C3649_Day4")) %>%
+  dplyr::select(-contains("C3649_Day0")) %>%
+  dplyr::select(-contains("C40280_Day2")) %>%
+  dplyr::select(-contains("H24280_Day2"))
+
+metadata <- metadata %>%
+  filter(Timepoint != "Day4") %>%
+  filter(SampleName != "C3647_Day30") %>%
+  filter(SampleName != "C40210_Day15") %>%
+  filter(SampleName != "C3649_Day4") %>%
+  filter(SampleName != "H24280_Day2") %>%
+  filter(SampleName != "C3649_Day0") %>%
+  filter(SampleName != "C40280_Day2") %>%
+  filter(SampleName != "H20682R_Day0") %>%
+  filter(SampleName != "H20682R_Day2") %>%
+  filter(SampleName != "H20682R_Day5") %>%
+  filter(SampleName != "H20682R_Day30")
+
+counts_norep <- counts %>%
+  dplyr::select(-(contains("R")))
+
+
+#create DGEList object
+dge <- DGEList(counts = counts_norep)
+dge$samples$group <- factor(metadata$Cond)
+
+dim(dge)
+dge$samples
+
+metadata$Species <- factor(
+  metadata$Species,
+  levels = c("C", "H")   # Chimp baseline
+)
+
+ metadata$Timepoint <- factor(
+   metadata$Timepoint,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+design_int <- model.matrix(~ Species * Timepoint,
+                           data =  metadata)
+
+colnames(design_int)
+colnames(design_int) <- make.names(colnames(design_int))
+
+library(edgeR)
+
+logCPM <- cpm(dge, log = TRUE, prior.count = 2)
+
+summary(rowMeans(logCPM))
+
+hist(
+    rowMeans(logCPM),
+    breaks = 100,
+    main = "Mean log2CPM across peaks - Reproducible3",
+    xlab = "Mean log2CPM"
+)
+
+cpm_mat <- cpm(dge)
+
+support <- rowSums(cpm_mat > 1)
+
+summary(support)
+
+table(support)
+
+quantile(rowMeans(cpm_mat),
+         probs=c(0,0.01,0.05,0.1,0.25,0.5,0.75,0.9,0.95,0.99,1))
+
+
+support <- rowSums(cpm_mat > 1)
+
+hist(
+    support,
+    breaks = 65,
+    main = "Peak reproducibility after CPM threshold - Reproducible 3",
+    xlab = "Number of samples with CPM > 1"
+)
+
+cpm_mat <- cpm(dge)
+
+data.frame(
+  Filter = c(
+    "All",
+    "Mean CPM > 1",
+    "Mean CPM > 2",
+    "Mean CPM > 5"
+  ),
+  Peaks = c(
+    nrow(cpm_mat),
+    sum(rowMeans(cpm_mat) > 1),
+    sum(rowMeans(cpm_mat) > 2),
+    sum(rowMeans(cpm_mat) > 5)
+  )
+)
+```
+```{r H3K27acSeq_DGE_Differential_Data_Reproducible3}
+counts_table <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible3_fc.RDS")
+metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+
+counts <-  counts_table %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <-  metadata %>%
+  filter(Timepoint!="Day4")
+
+metadata <- metadata %>% 
+  filter(!grepl("R", Individual))
+
+metadata$dgelist <- c(rep(c("Human_Day0","Human_Day2","Human_Day5","Human_Day15","Human_Day30"),7),rep(c("Chimp_Day0","Chimp_Day2","Chimp_Day5","Chimp_Day15","Chimp_Day30"),7))
+
+metadata <- metadata%>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+counts_norep <- counts %>%
+  dplyr::select(-(contains("R")))
+
+
+# #create DGEList object
+# dge <- DGEList(counts = counts_norep)
+# dge$samples$group <- factor(metadata$dgelist)
+# dge <- calcNormFactors(dge, method = "TMM")
+# dge$samples
+
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+dim(dge)
+dge$samples
+
+metadata$Species <- factor(
+  metadata$Species,
+  levels = c("C", "H")   # Chimp baseline
+)
+
+ metadata$Timepoint <- factor(
+   metadata$Timepoint,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+design_int <- model.matrix(~ Species * Timepoint,
+                           data =  metadata)
+
+colnames(design_int)
+colnames(design_int) <- make.names(colnames(design_int))
+
+# # Step 1: voom first
+# v1 <- voom(dge, design_int, plot = TRUE)
+# 
+# # Step 2: estimate duplicate correlation on voom-transformed data
+# corfit <- duplicateCorrelation(v1, design_int, block = metadata$Individual)
+# corfit.correlation <- corfit$consensus.correlation
+# 
+# # Step 3: voom again including correlation
+# v2 <- voom(dge, design_int, plot = TRUE,
+#            block = metadata$Individual,
+#            correlation = corfit.correlation)
+
+v2 <- readRDS("data/DGE/v2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+# Step 4: fit linear model
+# fit <- lmFit(v2, design_int, block = metadata$Individual, correlation = corfit.correlation)
+# fit <- eBayes(fit)
+
+fit <- readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+pal <- rainbow(length(unique(metadata$Timepoint)))
+day <- metadata$Timepoint
+plotDensities(v2, col = pal[as.numeric(day)], legend = FALSE)
+
+human_idx <- metadata$Species == "H"
+chimp_idx <- metadata$Species == "C"
+
+pal <- rainbow(length(unique(metadata$Timepoint)))
+
+# Human
+plotDensities(
+  v2[, human_idx],
+  col = pal[as.numeric(as.factor(metadata$Timepoint[human_idx]))],
+  main = "",
+  legend = FALSE,
+  axes = FALSE
+)
+
+axis(1)
+axis(2)
+mtext("log2 CPM", side = 1, line = 2)
+
+title("Human")
+  legend(
+      "right",
+      legend = metadata$Individual[human_idx],  # or Timepoint, etc.
+      col = rainbow(sum(human_idx)),
+      lty = 1,
+     cex = 0.7
+    )
+
+# Chimp
+plotDensities(
+  v2[, chimp_idx],
+  col = pal[as.numeric(as.factor(metadata$Timepoint[human_idx]))],
+  main = "",
+  legend = FALSE,
+  axes = FALSE
+)
+
+axis(1)
+axis(2)
+mtext("log2 CPM", side = 1, line = 2)
+
+title("Chimp")
+  legend(
+      "right",
+      legend = metadata$Individual[chimp_idx],  # or Timepoint, etc.
+      col = rainbow(sum(chimp_idx)),
+      lty = 1,
+     cex = 0.7
+    )
+
+species_levels <- unique(metadata$Species)
+day_levels <- unique(metadata$Timepoint)
+
+for (sp in species_levels) {
+  for (day in day_levels) {
+
+    idx <- metadata$Species == sp &
+           metadata$Timepoint == day
+
+    if (sum(idx) > 0) {
+
+      cols <- rainbow(sum(idx))
+
+      plotDensities(
+        v2[, idx],
+        col = cols,
+        main = paste(sp, day),
+        legend = FALSE,
+        axes = FALSE
+      )
+
+      axis(1)
+      axis(2)
+      mtext("log2 CPM", side = 1, line = 2)
+
+      legend(
+        "right",
+        legend = metadata$Individual[idx],
+        col = cols,
+        lty = 1,
+        cex = 0.7
+      )
+    }
+  }
+}
+
+
+# saveRDS(dge, "data/DGE/dge_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+# saveRDS(design_int, "data/DGE/design_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+# saveRDS(v1,"data/DGE/v1_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+# saveRDS(v2,"data/DGE/v2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+# saveRDS(fit, "data/DGE/fit_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Differential_Data_Model_Reproducible3}
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+design_int <- readRDS("data/DGE/design_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+v1 <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit <- readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+contrast_matrix <- makeContrasts(
+
+  # Species differences
+  HvC_Day0  = SpeciesH,
+  HvC_Day2  = SpeciesH + SpeciesH.TimepointDay2,
+  HvC_Day5  = SpeciesH + SpeciesH.TimepointDay5,
+  HvC_Day15 = SpeciesH + SpeciesH.TimepointDay15,
+  HvC_Day30 = SpeciesH + SpeciesH.TimepointDay30,
+  
+  #Trajectory differences
+  H_Day02 = TimepointDay2 + SpeciesH.TimepointDay2,
+  H_Day25 = TimepointDay5 + SpeciesH.TimepointDay5 - TimepointDay2 - SpeciesH.TimepointDay2,
+  H_Day515 = TimepointDay15 + SpeciesH.TimepointDay15 - TimepointDay5 - SpeciesH.TimepointDay5,
+  H_Day1530 = TimepointDay30 + SpeciesH.TimepointDay30 - TimepointDay15 - SpeciesH.TimepointDay15,
+  C_Day02 = TimepointDay2,
+  C_Day25 = TimepointDay5 - TimepointDay2,
+  C_Day515 = TimepointDay15 - TimepointDay5,
+  C_Day1530 = TimepointDay30 - TimepointDay15,
+  
+  # True interaction tests trajectory
+  Sig_Sp_inter_Traj02 = SpeciesH.TimepointDay2,
+  Sig_Sp_inter_Traj25 = SpeciesH.TimepointDay5 - SpeciesH.TimepointDay2,
+  Sig_Sp_inter_Traj515 = SpeciesH.TimepointDay15 - SpeciesH.TimepointDay5,
+  Sig_Sp_inter_Traj1530 = SpeciesH.TimepointDay30 - SpeciesH.TimepointDay15,
+  
+  levels = design_int
+)
+
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+plotSA(fit2, main = "H3K27ac Model")
+
+results_summary <- decideTests(fit2,
+                               adjust.method = "BH",
+                               p.value = 0.05)
+summary(results_summary)
+
+# saveRDS(fit2, "data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_Reproducible3}
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+#Create Human TopTable. using listapply, then you can pull specific comp using the $
+TopTables_H3K27ac_names <- colnames(fit2$coefficients) 
+
+TopTable_H3K27ac_All <- do.call(
+  rbind,
+  lapply(TopTables_H3K27ac_names,function(ct) {
+    
+    tt <- topTable(
+      fit2,
+      coef = ct,
+      number = Inf,
+      sort.by = "p"
+    )
+    
+    #add identifiers
+    tt$Gene <- rownames(tt)
+    tt$Comparisons <- ct
+    
+    tt
+  })
+)
+
+ComparisonNames <- unique(TopTable_H3K27ac_All$Comparisons)
+
+# saveRDS(TopTable_H3K27ac_All, "data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+# saveRDS(ComparisonNames, "data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+head(TopTable_H3K27ac_All)
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_VolcancoPlots_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+# Calculate global axis limits
+x_limits <- range(TopTable$logFC, na.rm = TRUE)
+y_limits <- range(-log10(TopTable$P.Value), na.rm = TRUE)
+
+plot <- list()
+
+for (n in ComparisonNames) {
+  data_n <- TopTable %>% 
+    dplyr::filter(Comparisons == n)
+  
+  plot[[n]] <- generate_volcano_plot(data_n, n) +
+    ggplot2::xlim(x_limits) +
+    ggplot2::ylim(y_limits)
+}
+
+# Print plots
+for (n in ComparisonNames) {
+  print(plot[[n]])
+}
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_Subsetting0.05_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- map(
+  ComparisonNames,
+  ~ {
+    df <- TopTable %>%
+      filter(Comparisons == paste0(.x))
+
+    list(
+      DEGs = df %>% filter(adj.P.Val < 0.05),
+      NonDEGs = df %>% filter(adj.P.Val >= 0.05)
+    )
+  }
+)
+
+
+names(H3K27ac_sets) <- paste0(ComparisonNames)
+
+saveRDS(H3K27ac_sets, "data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+```
+
+####Species
+
+```{r H3K27acSeq_DGE_Species_FC_Reproducible3, fig.height=6, fig.width=10}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15","HvC_Day30"
+  ))
+
+SpeciesD0_genes <- unique(c(H3K27ac_sets$HvC_Day0$DEGs$Gene))
+SpeciesD2_genes <- unique(c(H3K27ac_sets$HvC_Day2$DEGs$Gene))
+SpeciesD5_genes <- unique(c(H3K27ac_sets$HvC_Day5$DEGs$Gene))
+SpeciesD15_genes <- unique(c(H3K27ac_sets$HvC_Day15$DEGs$Gene))
+SpeciesD30_genes <- unique(c(H3K27ac_sets$HvC_Day30$DEGs$Gene))
+
+cluster_lists <- list(
+ HvC_Day0  = SpeciesD0_genes,
+  HvC_Day2  = SpeciesD2_genes,
+  HvC_Day5  = SpeciesD5_genes,
+  HvC_Day15  = SpeciesD15_genes,
+ HvC_Day30  = SpeciesD30_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+Species_DEG_info <- list(
+  HvC_Day0 = list(coef = "HvC_Day0", comp = "HvC_Day0"),
+  HvC_Day2 = list(coef = "HvC_Day2", comp = "HvC_Day2"),
+  HvC_Day5 = list(coef ="HvC_Day5", comp = "HvC_Day5"),
+ HvC_Day15 = list(coef = "HvC_Day15", comp = "HvC_Day15"),
+ HvC_Day30 = list(coef = "HvC_Day30", comp = "HvC_Day30")
+)
+
+direction_results <- setNames(
+  lapply(names(Species_DEG_info), function(name) {
+
+    info <- Species_DEG_info[[name]]
+
+    get_fc_directions_HvC(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2
+    )
+
+  }),
+  names(Species_DEG_info)
+)
+
+saveRDS(direction_results, "data/DGE/Species_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_FC_Reproducible3}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15",
+    "HvC_Day30"
+  ))
+
+aa <- unique(direction_results$HvC_Day0$all$Gene)
+ab <- unique(direction_results$HvC_Day0$Human_higher$Gene)
+ac <- unique(direction_results$HvC_Day0$Chimp_higher$Gene)
+
+ba <- unique(direction_results$HvC_Day2$all$Gene)
+bb <- unique(direction_results$HvC_Day2$Human_higher$Gene)
+bc <- unique(direction_results$HvC_Day2$Chimp_higher$Gene)
+
+da <- unique(direction_results$HvC_Day5$all$Gene)
+db <- unique(direction_results$HvC_Day5$Human_higher$Gene)
+dc <- unique(direction_results$HvC_Day5$Chimp_higher$Gene)
+
+ea <- unique(direction_results$HvC_Day15$all$Gene)
+eb <- unique(direction_results$HvC_Day15$Human_higher$Gene)
+ec <- unique(direction_results$HvC_Day15$Chimp_higher$Gene)
+
+fa <- unique(direction_results$HvC_Day30$all$Gene)
+fb <- unique(direction_results$HvC_Day30$Human_higher$Gene)
+fc <- unique(direction_results$HvC_Day30$Chimp_higher$Gene)
+
+
+cluster_lists <- list(
+  HvC_Day0_all = aa,
+  HvC_Day0_HumanHigher = ab,
+  HvC_Day0_ChimpHigher = ac,
+  
+  HvC_Day2_all = ba,
+  HvC_Day2_HumanHigher = bb,
+  HvC_Day2_ChimpHigher = bc,
+  
+  HvC_Day5_all = da,
+  HvC_Day5_HumanHigher = db,
+  HvC_Day5_ChimpHigher = dc,
+  
+  HvC_Day15_all = ea,
+  HvC_Day15_HumanHigher = eb,
+  HvC_Day15_ChimpHigher = ec,
+  
+  HvC_Day30_all = fa,
+  HvC_Day30_HumanHigher = fb,
+  HvC_Day30_ChimpHigher = fc
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_absFC_Reproducible3}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15",
+    "HvC_Day30"
+  ))
+
+aa <- unique(direction_results$HvC_Day0$all$Gene)
+ab <- unique(direction_results$HvC_Day0$Human_higher$Gene)
+ac <- unique(direction_results$HvC_Day0$Chimp_higher$Gene)
+
+ba <- unique(direction_results$HvC_Day2$all$Gene)
+bb <- unique(direction_results$HvC_Day2$Human_higher$Gene)
+bc <- unique(direction_results$HvC_Day2$Chimp_higher$Gene)
+
+da <- unique(direction_results$HvC_Day5$all$Gene)
+db <- unique(direction_results$HvC_Day5$Human_higher$Gene)
+dc <- unique(direction_results$HvC_Day5$Chimp_higher$Gene)
+
+ea <- unique(direction_results$HvC_Day15$all$Gene)
+eb <- unique(direction_results$HvC_Day15$Human_higher$Gene)
+ec <- unique(direction_results$HvC_Day15$Chimp_higher$Gene)
+
+fa <- unique(direction_results$HvC_Day30$all$Gene)
+fb <- unique(direction_results$HvC_Day30$Human_higher$Gene)
+fc <- unique(direction_results$HvC_Day30$Chimp_higher$Gene)
+
+
+cluster_lists <- list(
+  HvC_Day0_all = aa,
+  HvC_Day0_HumanHigher = ab,
+  HvC_Day0_ChimpHigher = ac,
+  
+  HvC_Day2_all = ba,
+  HvC_Day2_HumanHigher = bb,
+  HvC_Day2_ChimpHigher = bc,
+  
+  HvC_Day5_all = da,
+  HvC_Day5_HumanHigher = db,
+  HvC_Day5_ChimpHigher = dc,
+  
+  HvC_Day15_all = ea,
+  HvC_Day15_HumanHigher = eb,
+  HvC_Day15_ChimpHigher = ec,
+  
+  HvC_Day30_all = fa,
+  HvC_Day30_HumanHigher = fb,
+  HvC_Day30_ChimpHigher = fc
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Species_EnrichGo_Reproducible3}
+# v <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# 
+# 
+# all_go_results <- lapply(names(direction_results), function(traj) {
+# 
+#   res <- direction_results[[traj]]
+# 
+#   gene_sets <- list(
+#     All = res$all,
+#     Human_higher = res$Human_higher,
+#     Chimp_higher    = res$Chimp_higher
+#   )
+# 
+#   go <- Enrich_Go_sets(gene_sets, v)
+# 
+#   return(go)
+# })
+# 
+# names(all_go_results) <- names(direction_results)
+# 
+# 
+# saveRDS(all_go_results, "data/DGE/Species_go_results_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# 
+# Species_go_results_H3K27ac_hg38_Reproducible2_fc_No4 <- readRDS("data/DGE/Species_go_results_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+```
+
+```{r H3K27acSeq_DGE_Species_DEGs_Reproducible3}
+library(dplyr)
+library(purrr)
+library(stringr)
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+hvcdays <- names(H3K27ac_sets)[str_detect(names(H3K27ac_sets), "^HvC_")]
+
+prop_df <- map_dfr(hvcdays, function(traj) {
+  
+  x <- H3K27ac_sets[[traj]]
+  
+  tibble(
+    trajectory = traj,
+    DEG = length(x$DEGs$Gene),
+    NonDEG = length(x$NonDEGs$Gene)
+  )
+})
+library(tidyr)
+
+prop_long <- prop_df %>%
+  pivot_longer(cols = c(DEG, NonDEG),
+               names_to = "type",
+               values_to = "count") %>%
+  group_by(trajectory) %>%
+  mutate(prop = count / sum(count)) %>%
+  ungroup()
+prop_long$trajectory <- factor(
+  prop_long$trajectory,
+  levels = c("HvC_Day0", "HvC_Day2", "HvC_Day5", "HvC_Day15", "HvC_Day30"),
+  labels = c("0", "2", "5", "15", "30")
+)
+library(ggplot2)
+
+ggplot(prop_long, aes(x = trajectory, y = prop, fill = type)) +
+  geom_col() +
+  theme_bw() +
+  labs(
+    x = "Time",
+    y = "Proportion of genes",
+    fill = "",
+    title = "HvC comparisons: DEG vs NonDEG composition"
+  )
+```
+
+
+```{r H3K27acSeq_DGE_Species_DEGs_Proportions_Reproducible3, fig.height=7,fig.width=7}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+timepoints <- c("Day0","Day2","Day5","Day15","Day30")
+
+df <- TopTable %>%
+  filter(str_detect(Comparisons, "^HvC_Day")) %>%
+  mutate(
+    Time = str_extract(Comparisons, "Day[0-9]+"),
+    DEG = adj.P.Val < 0.05
+  ) %>%
+  filter(DEG)
+
+genes_list <- list(
+  Day0  = df %>% filter(Time == "Day0")  %>% pull(Gene) %>% unique(),
+  Day2  = df %>% filter(Time == "Day2")  %>% pull(Gene) %>% unique(),
+  Day5  = df %>% filter(Time == "Day5")  %>% pull(Gene) %>% unique(),
+  Day15 = df %>% filter(Time == "Day15") %>% pull(Gene) %>% unique(),
+  Day30 = df %>% filter(Time == "Day30") %>% pull(Gene) %>% unique()
+)
+
+ggVennDiagram(genes_list, label = "count") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    axis.text = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Species_DEGs_Proportions2_Reproducible3}
+library(dplyr)
+library(stringr)
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+df <- TopTable %>%
+  filter(str_detect(Comparisons, "^HvC_Day")) %>%
+  mutate(
+    Stage = str_extract(Comparisons, "Day[0-9]+"),
+    DEG = adj.P.Val < 0.05
+  ) %>%
+  filter(DEG)
+
+genes <- list(
+  Day0  = df %>% filter(Stage == "Day0")  %>% pull(Gene) %>% unique(),
+  Day2  = df %>% filter(Stage == "Day2")  %>% pull(Gene) %>% unique(),
+  Day5  = df %>% filter(Stage == "Day5")  %>% pull(Gene) %>% unique(),
+  Day15 = df %>% filter(Stage == "Day15") %>% pull(Gene) %>% unique(),
+  Day30 = df %>% filter(Stage == "Day30") %>% pull(Gene) %>% unique()
+)
+
+days <- names(genes)
+
+shared_all <- Reduce(intersect, genes)
+
+get_fate <- function(day) {
+
+  g <- genes[[day]]
+
+  specific <- setdiff(g, unlist(genes[names(genes) != day]))
+
+  shared_all_day <- intersect(g, shared_all)
+
+  shared_partial <- setdiff(
+    setdiff(g, specific),
+    shared_all_day
+  )
+
+  data.frame(
+    Day = day,
+    Specific = length(specific),
+    Shared_partial = length(shared_partial),
+    Shared_all = length(shared_all_day)
+  )
+}
+
+plot_df <- do.call(rbind, lapply(names(genes), get_fate))
+
+library(tidyr)
+
+plot_long <- plot_df %>%
+  pivot_longer(
+    cols = c(Specific, Shared_partial, Shared_all),
+    names_to = "Category",
+    values_to = "Count"
+  )
+
+plot_long$Day <- factor(
+  plot_long$Day,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+library(ggplot2)
+
+ggplot(plot_long, aes(x = Day, y = Count, fill = Category)) +
+  geom_col() +
+    scale_fill_manual(values = c(
+    "Specific" = "#D55E00",
+    "Shared_partial" = "#0072B2",
+    "Shared_all" = "#009E73"
+  )) +
+  theme_bw() +
+  labs(
+    x = "Developmental stage",
+    y = "Number of DEGs",
+    fill = "",
+    title = "Fate of HvC DEGs across development"
+  )
+
+library(dplyr)
+library(tidyr)
+
+plot_long_prop <- plot_df %>%
+  pivot_longer(
+    cols = c(Specific, Shared_partial, Shared_all),
+    names_to = "Category",
+    values_to = "Count"
+  ) %>%
+  group_by(Day) %>%
+  mutate(
+    Prop = Count / sum(Count)
+  ) %>%
+  ungroup()
+
+plot_long_prop$Day <- factor(
+  plot_long_prop$Day,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+library(ggplot2)
+
+ggplot(plot_long_prop, aes(x = Day, y = Prop, fill = Category)) +
+  geom_col() +
+  
+  scale_fill_manual(values = c(
+    "Specific" = "#D55E00",
+    "Shared_partial" = "#0072B2",
+    "Shared_all" = "#009E73"
+  )) +
+  
+  theme_bw() +
+  labs(
+    x = "Developmental stage",
+    y = "Proportion of DEGs",
+    fill = "",
+    title = "Fate of HvC DEGs across development (normalized)"
+  )
+
+
+```
+
+
+####Trajectory
+
+```{r H3K27acSeq_DGE_Trajectory_FC_Reproducible3, fig.height=6, fig.width=10}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+Traj02_genes <- intersect(H3K27ac_sets$H_Day02$DEGs$Gene,H3K27ac_sets$C_Day02$DEGs$Gene)
+Traj25_genes <- intersect(H3K27ac_sets$H_Day25$DEGs$Gene,H3K27ac_sets$C_Day25$DEGs$Gene)
+Traj515_genes <- intersect(H3K27ac_sets$H_Day515$DEGs$Gene,H3K27ac_sets$C_Day515$DEGs$Gene)
+Traj1530_genes <- intersect(H3K27ac_sets$H_Day1530$DEGs$Gene,H3K27ac_sets$C_Day1530$DEGs$Gene)
+
+length(Traj02_genes)
+length(Traj25_genes)
+length(Traj515_genes)
+length(Traj1530_genes)
+
+cluster_lists <- list(
+ Traj02_genes  = Traj02_genes,
+  Traj25_genes  = Traj25_genes,
+  Traj515_genes  = Traj515_genes,
+  Traj1530_genes  = Traj1530_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+```
+
+```{r H3K27acSeq_DGE_Trajectory_Directionality_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+
+traj_info <- list(
+  Traj02_genes = list(coef = "H_Day02", comp = "Day02"),
+  Traj25_genes = list(coef = "H_Day25", comp = "Day25"),
+  Traj515_genes = list(coef ="H_Day515", comp = "Day515"),
+ Traj1530_genes = list(coef = "H_Day1530", comp = "Day1530")
+)
+
+direction_results <- setNames(
+  lapply(names(traj_info), function(name) {
+
+    info <- traj_info[[name]]
+
+    get_fc_directions(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2,
+      gene_set = cluster_lists[[name]]
+    )
+
+  }),
+  names(traj_info)
+)
+
+saveRDS(direction_results, "data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Trajectory_Directionality_FC_Reproducible3}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+direction_results <- readRDS("data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+aa <- unique(direction_results$Traj02_genes$all$Gene)
+ab <- unique(direction_results$Traj02_genes$H_pos_C_neg$Gene)
+ac <- unique(direction_results$Traj02_genes$H_neg_C_pos$Gene)
+ad <- unique(direction_results$Traj02_genes$Both_pos$Gene)
+ae <- unique(direction_results$Traj02_genes$Both_neg$Gene)
+af <- unique(direction_results$Traj02_genes$Same_direction$Gene)
+ag <- unique(direction_results$Traj02_genes$Opposite_direction$Gene)
+
+ba <- unique(direction_results$Traj25_genes$all$Gene)
+bb <- unique(direction_results$Traj25_genes$H_pos_C_neg$Gene)
+bc <- unique(direction_results$Traj25_genes$H_neg_C_pos$Gene)
+bd <- unique(direction_results$Traj25_genes$Both_pos$Gene)
+be <- unique(direction_results$Traj25_genes$Both_neg$Gene)
+bf <- unique(direction_results$Traj25_genes$Same_direction$Gene)
+bg <- unique(direction_results$Traj25_genes$Opposite_direction$Gene)
+
+da <- unique(direction_results$Traj515_genes$all$Gene)
+db <- unique(direction_results$Traj515_genes$H_pos_C_neg$Gene)
+dc <- unique(direction_results$Traj515_genes$H_neg_C_pos$Gene)
+dd <- unique(direction_results$Traj515_genes$Both_pos$Gene)
+de <- unique(direction_results$Traj515_genes$Both_neg$Gene)
+df <- unique(direction_results$Traj515_genes$Same_direction$Gene)
+dg <- unique(direction_results$Traj515_genes$Opposite_direction$Gene)
+
+ea <- unique(direction_results$Traj1530_genes$all$Gene)
+eb <- unique(direction_results$Traj1530_genes$H_pos_C_neg$Gene)
+ec <- unique(direction_results$Traj1530_genes$H_neg_C_pos$Gene)
+ed <- unique(direction_results$Traj1530_genes$Both_pos$Gene)
+ee <- unique(direction_results$Traj1530_genes$Both_neg$Gene)
+ef <- unique(direction_results$Traj1530_genes$Same_direction$Gene)
+eg <- unique(direction_results$Traj1530_genes$Opposite_direction$Gene)
+
+cluster_lists <- list(
+  Traj02_All = aa,
+  Traj02_HumanPos = ab,
+  Traj02_ChimpPos = ac,
+  Traj02_Both_pos = ad,
+  Traj02_Both_neg = ae,
+  Traj02_Same_direction = af,
+  Traj02_Opposite_direction = ag,
+  
+  Traj25_All = ba,
+  Traj25_HumanPos = bb,
+  Traj25_ChimpPos = bc,
+  Traj25_Both_pos = bd,
+  Traj25_Both_neg = be,
+  Traj25_Same_direction = bf,
+  Traj25_Opposite_direction = bg,
+ 
+ 
+  Traj515_All = da,
+  Traj515_HumanPos = db,
+  Traj515_ChimpPos = dc,
+  Traj515_Both_pos = dd,
+  Traj515_Both_neg = de,
+  Traj515_Same_direction = df,
+  Traj515_Opposite_direction = dg,
+ 
+  Traj1530_All = ea,
+  Traj1530_HumanPos = eb,
+  Traj1530_ChimpPos = ec,
+  Traj1530_Both_pos = ed,
+  Traj1530_Both_neg = ee,
+  Traj1530_Same_direction = ef,
+  Traj1530_Opposite_direction = eg
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_2_0_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+H_comp <- "H_Day02"
+C_comp <- "C_Day02"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day02$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day02$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_4_2_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+H_comp <- "H_Day25"
+C_comp <- "C_Day25"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day25$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day25$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_15_5_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+
+H_comp <- "H_Day515"
+C_comp <- "C_Day515"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+max_val <- max(abs(c(x_limits, y_limits)))
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day515$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day515$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_30_15_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+H_comp <- "H_Day1530"
+C_comp <- "C_Day1530"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+max_val <- max(abs(c(x_limits, y_limits)))
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day1530$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day1530$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Trajectory_DEGs_Proportions_Reproducible3}
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+design_int <- readRDS("data/DGE/design_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+v1 <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit <-readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit2 <-readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+direction_results <- readRDS("data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+  
+traj_levels <- c("H_Day02","H_Day25","H_Day515","H_Day1530",
+                 "C_Day02","C_Day25","C_Day515","C_Day1530")
+
+df <- TopTable %>%
+  dplyr::filter(Comparisons %in% traj_levels)
+
+df <- df %>%
+  dplyr::mutate(
+    Species = ifelse(grepl("^H", Comparisons), "Human", "Chimp"),
+    Stage = sub(".*_(Day[0-9]+)", "\\1", Comparisons),
+    DEG = adj.P.Val < 0.05
+  )
+
+df_deg <- df %>%
+  dplyr::filter(DEG)
+
+library(dplyr)
+
+df_deg2 <- df_deg %>%
+  group_by(Gene, Stage, Species) %>%
+  summarise(.groups = "drop")
+
+df_overlap <- df_deg2 %>%
+  tidyr::pivot_wider(
+    names_from = Species,
+    values_from = Gene,
+    values_fn = length,
+    values_fill = 0
+  )
+
+df_flags <- df_deg2 %>%
+  mutate(flag = TRUE) %>%
+  tidyr::pivot_wider(
+    names_from = Species,
+    values_from = flag,
+    values_fill = FALSE
+  ) %>%
+  dplyr::mutate(
+    category = case_when(
+      Human & Chimp ~ "Shared",
+      Human ~ "Human only",
+      Chimp ~ "Chimp only"
+    )
+  )
+
+plot_df <- df_flags %>%
+  group_by(Stage, category) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Stage) %>%
+  mutate(prop = n / sum(n))
+
+plot_df$Stage <- factor(
+  plot_df$Stage,
+  levels = c("Day02", "Day25", "Day515", "Day1530")
+)
+
+library(ggpattern)
+
+ggplot(plot_df, aes(x = Stage, y = n, fill = category)) +
+
+  geom_col_pattern(
+    aes(pattern = category),
+    colour = "black",
+    pattern_colour = "black",
+    pattern_fill = "white",
+    pattern_density = 0.4,
+    pattern_spacing = 0.02
+  ) +
+
+  scale_fill_manual(values = c(
+    "Shared" = "grey70",
+    "Human only" = "black",
+    "Chimp only" = "white"
+  )) +
+
+  scale_pattern_manual(values = c(
+    "Shared" = "stripe",
+    "Human only" = "none",
+    "Chimp only" = "none"
+  )) +
+
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Developmental Stage",
+    y = "Count",
+    fill = "",
+    pattern = ""
+  )
+
+ggplot(plot_df, aes(x = Stage, y = prop, fill = category)) +
+
+  geom_col_pattern(
+    aes(pattern = category),
+    colour = "black",
+    pattern_colour = "black",
+    pattern_fill = "white",
+    pattern_density = 0.4,
+    pattern_spacing = 0.02
+  ) +
+
+  scale_fill_manual(values = c(
+    "Shared" = "grey70",
+    "Human only" = "black",
+    "Chimp only" = "white"
+  )) +
+
+  scale_pattern_manual(values = c(
+    "Shared" = "stripe",
+    "Human only" = "none",
+    "Chimp only" = "none"
+  )) +
+
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Developmental Stage",
+    y = "Proportion of DERs",
+    fill = "",
+    pattern = ""
+  )
+```
+
+####Interactions
+
+```{r H3K27acSeq_DGE_Interaction_FC_Reproducible3}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+TopTable_H3K27ac_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+Inter_02_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj02$DEGs$Gene)
+Inter_25_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj25$DEGs$Gene)
+Inter_515_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj515$DEGs$Gene)
+Inter_1530_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj1530$DEGs$Gene)
+
+cluster_lists <- list(
+  Inter_02_genes  = Inter_02_genes,
+  Inter_25_genes  = Inter_25_genes,
+  Inter_515_genes  = Inter_515_genes,
+  Inter_1530_genes  = Inter_1530_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_H3K27ac_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Interaction_Directionality_Reproducible3}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+traj_info <- list(
+  InterTraj02 = list(coef = "Sig_Sp_inter_Traj02", comp = "Day02"),
+  InterTraj25 = list(coef = "Sig_Sp_inter_Traj25", comp = "Day25"),
+  InterTraj515 = list(coef = "Sig_Sp_inter_Traj515", comp = "Day515"),
+  InterTraj1530 = list(coef = "Sig_Sp_inter_Traj1530", comp = "Day1530")
+)
+
+cluster_lists <- list(
+  InterTraj02  = Inter_02_genes,
+  InterTraj25  = Inter_25_genes,
+  InterTraj515 = Inter_515_genes,
+  InterTraj1530 = Inter_1530_genes
+)
+
+direction_results <- setNames(
+  lapply(names(traj_info), function(name) {
+
+    info <- traj_info[[name]]
+
+    get_fc_directions(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2,
+      gene_set = cluster_lists[[name]]
+    )
+
+  }),
+  names(traj_info)
+)
+
+saveRDS(direction_results, "data/DGE/Interaction_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Interaction_Directionality_FC_Reproducible3}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/Interaction_Directions_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_H3K27ac_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+aa <- unique(H3K27ac_sets$InterTraj02$all$Gene)
+ab <- unique(H3K27ac_sets$InterTraj02$H_pos_C_neg$Gene)
+ac <- unique(H3K27ac_sets$InterTraj02$H_neg_C_pos$Gene)
+ad <- unique(H3K27ac_sets$InterTraj02$Both_pos$Gene)
+ae <- unique(H3K27ac_sets$InterTraj02$Both_neg$Gene)
+af <- unique(H3K27ac_sets$InterTraj02$Same_direction$Gene)
+ag <- unique(H3K27ac_sets$InterTraj02$Opposite_direction$Gene)
+
+ba <- unique(H3K27ac_sets$InterTraj25$all$Gene)
+bb <- unique(H3K27ac_sets$InterTraj25$H_pos_C_neg$Gene)
+bc <- unique(H3K27ac_sets$InterTraj25$H_neg_C_pos$Gene)
+bd <- unique(H3K27ac_sets$InterTraj25$Both_pos$Gene)
+be <- unique(H3K27ac_sets$InterTraj25$Both_neg$Gene)
+bf <- unique(H3K27ac_sets$InterTraj25$Same_direction$Gene)
+bg <- unique(H3K27ac_sets$InterTraj25$Opposite_direction$Gene)
+
+
+da <- unique(H3K27ac_sets$InterTraj515$all$Gene)
+db <- unique(H3K27ac_sets$InterTraj515$H_pos_C_neg$Gene)
+dc <- unique(H3K27ac_sets$InterTraj515$H_neg_C_pos$Gene)
+dd <- unique(H3K27ac_sets$InterTraj515$Both_pos$Gene)
+de <- unique(H3K27ac_sets$InterTraj515$Both_neg$Gene)
+df <- unique(H3K27ac_sets$InterTraj515$Same_direction$Gene)
+dg <- unique(H3K27ac_sets$InterTraj515$Opposite_direction$Gene)
+
+ea <- unique(H3K27ac_sets$InterTraj1530$all$Gene)
+eb <- unique(H3K27ac_sets$InterTraj1530$H_pos_C_neg$Gene)
+ec <- unique(H3K27ac_sets$InterTraj1530$H_neg_C_pos$Gene)
+ed <- unique(H3K27ac_sets$InterTraj1530$Both_pos$Gene)
+ee <- unique(H3K27ac_sets$InterTraj1530$Both_neg$Gene)
+ef <- unique(H3K27ac_sets$InterTraj1530$Same_direction$Gene)
+eg <- unique(H3K27ac_sets$InterTraj1530$Opposite_direction$Gene)
+
+cluster_lists <- list(
+  Inter02_All = aa,
+  Inter02_HumanPos = ab,
+  Inter02_ChimpPos = ac,
+  Inter02_Both_pos = ad,
+  Inter02_Both_neg = ae,
+  Inter02_Same_direction = af,
+  Inter02_Opposite_direction = ag,
+  
+  Inter25_All = ba,
+  Inter25_HumanPos = bb,
+  Inter25_ChimpPos = bc,
+  Inter25_Both_pos = bd,
+  Inter25_Both_neg = be,
+  Inter25_Same_direction = bf,
+  Inter25_Opposite_direction = bg,
+
+  
+  Inter515_All = da,
+  Inter515_HumanPos = db,
+  Inter515_ChimpPos = dc,
+  Inter515_Both_pos = dd,
+  Inter515_Both_neg = de,
+  Inter515_Same_direction = df,
+  Inter515_Opposite_direction = dg,
+  
+  
+  Inter1530_All = ea,
+  Inter1530_HumanPos = eb,
+  Inter1530_ChimpPos = ec,
+  Inter1530_Both_pos = ed,
+  Inter1530_Both_neg = ee,
+  Inter1530_Same_direction = ef,
+  Inter1530_Opposite_direction = eg
+  
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_interaction_No4(cluster_lists[[clust_name]], clust_name, TopTable_H3K27ac_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+###Reproducible4
+
+####Stats
+```{r H3K27acSeq_DGE_Interaction_Stats_Reproducible4}
+
+library(edgeR)
+
+counts_table <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible4_fc.RDS")
+metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+
+counts <- counts_table %>%
+  dplyr::select(!matches("Day4")) %>%
+  dplyr::select(-contains("C3647_Day30")) %>%
+  dplyr::select(-contains("C40210_Day15")) %>%
+  dplyr::select(-contains("C3649_Day4")) %>%
+  dplyr::select(-contains("C3649_Day0")) %>%
+  dplyr::select(-contains("C40280_Day2")) %>%
+  dplyr::select(-contains("H24280_Day2"))
+
+metadata <- metadata %>%
+  filter(Timepoint != "Day4") %>%
+  filter(SampleName != "C3647_Day30") %>%
+  filter(SampleName != "C40210_Day15") %>%
+  filter(SampleName != "C3649_Day4") %>%
+  filter(SampleName != "H24280_Day2") %>%
+  filter(SampleName != "C3649_Day0") %>%
+  filter(SampleName != "C40280_Day2") %>%
+  filter(SampleName != "H20682R_Day0") %>%
+  filter(SampleName != "H20682R_Day2") %>%
+  filter(SampleName != "H20682R_Day5") %>%
+  filter(SampleName != "H20682R_Day30")
+
+counts_norep <- counts %>%
+  dplyr::select(-(contains("R")))
+
+
+#create DGEList object
+dge <- DGEList(counts = counts_norep)
+dge$samples$group <- factor(metadata$Cond)
+
+dim(dge)
+dge$samples
+
+metadata$Species <- factor(
+  metadata$Species,
+  levels = c("C", "H")   # Chimp baseline
+)
+
+ metadata$Timepoint <- factor(
+   metadata$Timepoint,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+design_int <- model.matrix(~ Species * Timepoint,
+                           data =  metadata)
+
+colnames(design_int)
+colnames(design_int) <- make.names(colnames(design_int))
+
+library(edgeR)
+
+logCPM <- cpm(dge, log = TRUE, prior.count = 2)
+
+summary(rowMeans(logCPM))
+
+hist(
+    rowMeans(logCPM),
+    breaks = 100,
+    main = "Mean log2CPM across peaks - Reproducible4",
+    xlab = "Mean log2CPM"
+)
+
+cpm_mat <- cpm(dge)
+
+support <- rowSums(cpm_mat > 1)
+
+summary(support)
+
+table(support)
+
+quantile(rowMeans(cpm_mat),
+         probs=c(0,0.01,0.05,0.1,0.25,0.5,0.75,0.9,0.95,0.99,1))
+
+
+support <- rowSums(cpm_mat > 1)
+
+hist(
+    support,
+    breaks = 65,
+    main = "Peak reproducibility after CPM threshold - Reproducible 4",
+    xlab = "Number of samples with CPM > 1"
+)
+
+cpm_mat <- cpm(dge)
+
+data.frame(
+  Filter = c(
+    "All",
+    "Mean CPM > 1",
+    "Mean CPM > 2",
+    "Mean CPM > 5"
+  ),
+  Peaks = c(
+    nrow(cpm_mat),
+    sum(rowMeans(cpm_mat) > 1),
+    sum(rowMeans(cpm_mat) > 2),
+    sum(rowMeans(cpm_mat) > 5)
+  )
+)
+```
+
+```{r H3K27acSeq_DGE_Differential_Data_Reproducible4}
+counts_table <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible4_fc.RDS")
+metadata <- readRDS("data/Data_Sets/H3K27ac_Metadata.RDS")
+
+counts <-  counts_table %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <-  metadata %>%
+  filter(Timepoint!="Day4")
+
+metadata <- metadata %>% 
+  filter(!grepl("R", Individual))
+
+metadata$dgelist <- c(rep(c("Human_Day0","Human_Day2","Human_Day5","Human_Day15","Human_Day30"),7),rep(c("Chimp_Day0","Chimp_Day2","Chimp_Day5","Chimp_Day15","Chimp_Day30"),7))
+
+metadata <- metadata%>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+counts_norep <- counts %>%
+  dplyr::select(-(contains("R")))
+
+
+# #create DGEList object
+# dge <- DGEList(counts = counts_norep)
+# dge$samples$group <- factor(metadata$dgelist)
+# dge <- calcNormFactors(dge, method = "TMM")
+# dge$samples
+
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+dim(dge)
+dge$samples
+
+metadata$Species <- factor(
+  metadata$Species,
+  levels = c("C", "H")   # Chimp baseline
+)
+
+ metadata$Timepoint <- factor(
+   metadata$Timepoint,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+design_int <- model.matrix(~ Species * Timepoint,
+                           data =  metadata)
+
+colnames(design_int)
+colnames(design_int) <- make.names(colnames(design_int))
+
+# # Step 1: voom first
+# v1 <- voom(dge, design_int, plot = TRUE)
+# 
+# # Step 2: estimate duplicate correlation on voom-transformed data
+# corfit <- duplicateCorrelation(v1, design_int, block = metadata$Individual)
+# corfit.correlation <- corfit$consensus.correlation
+# 
+# # Step 3: voom again including correlation
+# v2 <- voom(dge, design_int, plot = TRUE,
+#            block = metadata$Individual,
+#            correlation = corfit.correlation)
+
+v2 <- readRDS("data/DGE/v2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+# # Step 4: fit linear model
+# fit <- lmFit(v2, design_int, block = metadata$Individual, correlation = corfit.correlation)
+# fit <- eBayes(fit)
+
+fit <- readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+pal <- rainbow(length(unique(metadata$Timepoint)))
+day <- metadata$Timepoint
+plotDensities(v2, col = pal[as.numeric(day)], legend = FALSE)
+
+human_idx <- metadata$Species == "H"
+chimp_idx <- metadata$Species == "C"
+
+pal <- rainbow(length(unique(metadata$Timepoint)))
+
+# Human
+plotDensities(
+  v2[, human_idx],
+  col = pal[as.numeric(as.factor(metadata$Timepoint[human_idx]))],
+  main = "",
+  legend = FALSE,
+  axes = FALSE
+)
+
+axis(1)
+axis(2)
+mtext("log2 CPM", side = 1, line = 2)
+
+title("Human")
+  legend(
+      "right",
+      legend = metadata$Individual[human_idx],  # or Timepoint, etc.
+      col = rainbow(sum(human_idx)),
+      lty = 1,
+     cex = 0.7
+    )
+
+# Chimp
+plotDensities(
+  v2[, chimp_idx],
+  col = pal[as.numeric(as.factor(metadata$Timepoint[human_idx]))],
+  main = "",
+  legend = FALSE,
+  axes = FALSE
+)
+
+axis(1)
+axis(2)
+mtext("log2 CPM", side = 1, line = 2)
+
+title("Chimp")
+  legend(
+      "right",
+      legend = metadata$Individual[chimp_idx],  # or Timepoint, etc.
+      col = rainbow(sum(chimp_idx)),
+      lty = 1,
+     cex = 0.7
+    )
+
+species_levels <- unique(metadata$Species)
+day_levels <- unique(metadata$Timepoint)
+
+for (sp in species_levels) {
+  for (day in day_levels) {
+
+    idx <- metadata$Species == sp &
+           metadata$Timepoint == day
+
+    if (sum(idx) > 0) {
+
+      cols <- rainbow(sum(idx))
+
+      plotDensities(
+        v2[, idx],
+        col = cols,
+        main = paste(sp, day),
+        legend = FALSE,
+        axes = FALSE
+      )
+
+      axis(1)
+      axis(2)
+      mtext("log2 CPM", side = 1, line = 2)
+
+      legend(
+        "right",
+        legend = metadata$Individual[idx],
+        col = cols,
+        lty = 1,
+        cex = 0.7
+      )
+    }
+  }
+}
+
+# saveRDS(dge, "data/DGE/dge_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+# saveRDS(design_int, "data/DGE/design_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+# saveRDS(v1,"data/DGE/v1_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+# saveRDS(v2,"data/DGE/v2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+# saveRDS(fit, "data/DGE/fit_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Differential_Data_Model_Reproducible4}
+dge <- readRDS("data/DGE/dge_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+design_int <- readRDS("data/DGE/design_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+v1 <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+fit <- readRDS("data/DGE/fit_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+contrast_matrix <- makeContrasts(
+
+  # Species differences
+  HvC_Day0  = SpeciesH,
+  HvC_Day2  = SpeciesH + SpeciesH.TimepointDay2,
+  HvC_Day5  = SpeciesH + SpeciesH.TimepointDay5,
+  HvC_Day15 = SpeciesH + SpeciesH.TimepointDay15,
+  HvC_Day30 = SpeciesH + SpeciesH.TimepointDay30,
+  
+  #Trajectory differences
+  H_Day02 = TimepointDay2 + SpeciesH.TimepointDay2,
+  H_Day25 = TimepointDay5 + SpeciesH.TimepointDay5 - TimepointDay2 - SpeciesH.TimepointDay2,
+  H_Day515 = TimepointDay15 + SpeciesH.TimepointDay15 - TimepointDay5 - SpeciesH.TimepointDay5,
+  H_Day1530 = TimepointDay30 + SpeciesH.TimepointDay30 - TimepointDay15 - SpeciesH.TimepointDay15,
+  C_Day02 = TimepointDay2,
+  C_Day25 = TimepointDay5 - TimepointDay2,
+  C_Day515 = TimepointDay15 - TimepointDay5,
+  C_Day1530 = TimepointDay30 - TimepointDay15,
+  
+  # True interaction tests trajectory
+  Sig_Sp_inter_Traj02 = SpeciesH.TimepointDay2,
+  Sig_Sp_inter_Traj25 = SpeciesH.TimepointDay5 - SpeciesH.TimepointDay2,
+  Sig_Sp_inter_Traj515 = SpeciesH.TimepointDay15 - SpeciesH.TimepointDay5,
+  Sig_Sp_inter_Traj1530 = SpeciesH.TimepointDay30 - SpeciesH.TimepointDay15,
+  
+  levels = design_int
+)
+
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+plotSA(fit2, main = "H3K27ac Model")
+
+results_summary <- decideTests(fit2,
+                               adjust.method = "BH",
+                               p.value = 0.05)
+summary(results_summary)
+
+saveRDS(fit2, "data/DGE/fit2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_Reproducible4}
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+#Create Human TopTable. using listapply, then you can pull specific comp using the $
+TopTables_H3K27ac_names <- colnames(fit2$coefficients) 
+
+TopTable_H3K27ac_All <- do.call(
+  rbind,
+  lapply(TopTables_H3K27ac_names,function(ct) {
+    
+    tt <- topTable(
+      fit2,
+      coef = ct,
+      number = Inf,
+      sort.by = "p"
+    )
+    
+    #add identifiers
+    tt$Gene <- rownames(tt)
+    tt$Comparisons <- ct
+    
+    tt
+  })
+)
+
+ComparisonNames <- unique(TopTable_H3K27ac_All$Comparisons)
+
+saveRDS(TopTable_H3K27ac_All, "data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+saveRDS(ComparisonNames, "data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+head(TopTable_H3K27ac_All)
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_VolcancoPlots_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+# Calculate global axis limits
+x_limits <- range(TopTable$logFC, na.rm = TRUE)
+y_limits <- range(-log10(TopTable$P.Value), na.rm = TRUE)
+
+plot <- list()
+
+for (n in ComparisonNames) {
+  data_n <- TopTable %>% 
+    dplyr::filter(Comparisons == n)
+  
+  plot[[n]] <- generate_volcano_plot(data_n, n) +
+    ggplot2::xlim(x_limits) +
+    ggplot2::ylim(y_limits)
+}
+
+# Print plots
+for (n in ComparisonNames) {
+  print(plot[[n]])
+}
+```
+
+```{r H3K27acSeq_DGE_Differential_TopTable_Subsetting0.05_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- map(
+  ComparisonNames,
+  ~ {
+    df <- TopTable %>%
+      filter(Comparisons == paste0(.x))
+
+    list(
+      DEGs = df %>% filter(adj.P.Val < 0.05),
+      NonDEGs = df %>% filter(adj.P.Val >= 0.05)
+    )
+  }
+)
+
+
+names(H3K27ac_sets) <- paste0(ComparisonNames)
+
+saveRDS(H3K27ac_sets, "data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+```
+
+####Species
+
+```{r H3K27acSeq_DGE_Species_FC_Reproducible4, fig.height=6, fig.width=10}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15","HvC_Day30"
+  ))
+
+SpeciesD0_genes <- unique(c(H3K27ac_sets$HvC_Day0$DEGs$Gene))
+SpeciesD2_genes <- unique(c(H3K27ac_sets$HvC_Day2$DEGs$Gene))
+SpeciesD5_genes <- unique(c(H3K27ac_sets$HvC_Day5$DEGs$Gene))
+SpeciesD15_genes <- unique(c(H3K27ac_sets$HvC_Day15$DEGs$Gene))
+SpeciesD30_genes <- unique(c(H3K27ac_sets$HvC_Day30$DEGs$Gene))
+
+cluster_lists <- list(
+ HvC_Day0  = SpeciesD0_genes,
+  HvC_Day2  = SpeciesD2_genes,
+  HvC_Day5  = SpeciesD5_genes,
+  HvC_Day15  = SpeciesD15_genes,
+ HvC_Day30  = SpeciesD30_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible3_fc_No4.RDS")
+
+Species_DEG_info <- list(
+  HvC_Day0 = list(coef = "HvC_Day0", comp = "HvC_Day0"),
+  HvC_Day2 = list(coef = "HvC_Day2", comp = "HvC_Day2"),
+  HvC_Day5 = list(coef ="HvC_Day5", comp = "HvC_Day5"),
+ HvC_Day15 = list(coef = "HvC_Day15", comp = "HvC_Day15"),
+ HvC_Day30 = list(coef = "HvC_Day30", comp = "HvC_Day30")
+)
+
+direction_results <- setNames(
+  lapply(names(Species_DEG_info), function(name) {
+
+    info <- Species_DEG_info[[name]]
+
+    get_fc_directions_HvC(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2
+    )
+
+  }),
+  names(Species_DEG_info)
+)
+
+saveRDS(direction_results, "data/DGE/Species_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_FC_Reproducible4}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15",
+    "HvC_Day30"
+  ))
+
+aa <- unique(direction_results$HvC_Day0$all$Gene)
+ab <- unique(direction_results$HvC_Day0$Human_higher$Gene)
+ac <- unique(direction_results$HvC_Day0$Chimp_higher$Gene)
+
+ba <- unique(direction_results$HvC_Day2$all$Gene)
+bb <- unique(direction_results$HvC_Day2$Human_higher$Gene)
+bc <- unique(direction_results$HvC_Day2$Chimp_higher$Gene)
+
+da <- unique(direction_results$HvC_Day5$all$Gene)
+db <- unique(direction_results$HvC_Day5$Human_higher$Gene)
+dc <- unique(direction_results$HvC_Day5$Chimp_higher$Gene)
+
+ea <- unique(direction_results$HvC_Day15$all$Gene)
+eb <- unique(direction_results$HvC_Day15$Human_higher$Gene)
+ec <- unique(direction_results$HvC_Day15$Chimp_higher$Gene)
+
+fa <- unique(direction_results$HvC_Day30$all$Gene)
+fb <- unique(direction_results$HvC_Day30$Human_higher$Gene)
+fc <- unique(direction_results$HvC_Day30$Chimp_higher$Gene)
+
+
+cluster_lists <- list(
+  HvC_Day0_all = aa,
+  HvC_Day0_HumanHigher = ab,
+  HvC_Day0_ChimpHigher = ac,
+  
+  HvC_Day2_all = ba,
+  HvC_Day2_HumanHigher = bb,
+  HvC_Day2_ChimpHigher = bc,
+  
+  HvC_Day5_all = da,
+  HvC_Day5_HumanHigher = db,
+  HvC_Day5_ChimpHigher = dc,
+  
+  HvC_Day15_all = ea,
+  HvC_Day15_HumanHigher = eb,
+  HvC_Day15_ChimpHigher = ec,
+  
+  HvC_Day30_all = fa,
+  HvC_Day30_HumanHigher = fb,
+  HvC_Day30_ChimpHigher = fc
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Species_Directionality_absFC_Reproducible4}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Species <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "HvC_Day0","HvC_Day2","HvC_Day5","HvC_Day15",
+    "HvC_Day30"
+  ))
+
+aa <- unique(direction_results$HvC_Day0$all$Gene)
+ab <- unique(direction_results$HvC_Day0$Human_higher$Gene)
+ac <- unique(direction_results$HvC_Day0$Chimp_higher$Gene)
+
+ba <- unique(direction_results$HvC_Day2$all$Gene)
+bb <- unique(direction_results$HvC_Day2$Human_higher$Gene)
+bc <- unique(direction_results$HvC_Day2$Chimp_higher$Gene)
+
+da <- unique(direction_results$HvC_Day5$all$Gene)
+db <- unique(direction_results$HvC_Day5$Human_higher$Gene)
+dc <- unique(direction_results$HvC_Day5$Chimp_higher$Gene)
+
+ea <- unique(direction_results$HvC_Day15$all$Gene)
+eb <- unique(direction_results$HvC_Day15$Human_higher$Gene)
+ec <- unique(direction_results$HvC_Day15$Chimp_higher$Gene)
+
+fa <- unique(direction_results$HvC_Day30$all$Gene)
+fb <- unique(direction_results$HvC_Day30$Human_higher$Gene)
+fc <- unique(direction_results$HvC_Day30$Chimp_higher$Gene)
+
+
+cluster_lists <- list(
+  HvC_Day0_all = aa,
+  HvC_Day0_HumanHigher = ab,
+  HvC_Day0_ChimpHigher = ac,
+  
+  HvC_Day2_all = ba,
+  HvC_Day2_HumanHigher = bb,
+  HvC_Day2_ChimpHigher = bc,
+  
+  HvC_Day5_all = da,
+  HvC_Day5_HumanHigher = db,
+  HvC_Day5_ChimpHigher = dc,
+  
+  HvC_Day15_all = ea,
+  HvC_Day15_HumanHigher = eb,
+  HvC_Day15_ChimpHigher = ec,
+  
+  HvC_Day30_all = fa,
+  HvC_Day30_HumanHigher = fb,
+  HvC_Day30_ChimpHigher = fc
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_species(cluster_lists[[clust_name]], clust_name, TopTable_Species)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Trajectory_EnrichGo_Reproducible4}
+# v <- readRDS("data/DGE/v1_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# 
+# 
+# all_go_results <- lapply(names(direction_results), function(traj) {
+# 
+#   res <- direction_results[[traj]]
+# 
+#   gene_sets <- list(
+#     All = res$all,
+#     Human_higher = res$Human_higher,
+#     Chimp_higher    = res$Chimp_higher
+#   )
+# 
+#   go <- Enrich_Go_sets(gene_sets, v)
+# 
+#   return(go)
+# })
+# 
+# names(all_go_results) <- names(direction_results)
+# 
+# 
+# saveRDS(all_go_results, "data/DGE/Species_go_results_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+# 
+# Species_go_results_H3K27ac_hg38_Reproducible2_fc_No4 <- readRDS("data/DGE/Species_go_results_H3K27ac_hg38_Reproducible2_fc_No4.RDS")
+
+```
+
+```{r H3K27acSeq_DGE_Species_DEGs_Reproducible4}
+library(dplyr)
+library(purrr)
+library(stringr)
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+hvcdays <- names(H3K27ac_sets)[str_detect(names(H3K27ac_sets), "^HvC_")]
+
+prop_df <- map_dfr(hvcdays, function(traj) {
+  
+  x <- H3K27ac_sets[[traj]]
+  
+  tibble(
+    trajectory = traj,
+    DEG = length(x$DEGs$Gene),
+    NonDEG = length(x$NonDEGs$Gene)
+  )
+})
+library(tidyr)
+
+prop_long <- prop_df %>%
+  pivot_longer(cols = c(DEG, NonDEG),
+               names_to = "type",
+               values_to = "count") %>%
+  group_by(trajectory) %>%
+  mutate(prop = count / sum(count)) %>%
+  ungroup()
+prop_long$trajectory <- factor(
+  prop_long$trajectory,
+  levels = c("HvC_Day0", "HvC_Day2", "HvC_Day5", "HvC_Day15", "HvC_Day30"),
+  labels = c("0", "2", "5", "15", "30")
+)
+library(ggplot2)
+
+ggplot(prop_long, aes(x = trajectory, y = prop, fill = type)) +
+  geom_col() +
+  theme_bw() +
+  labs(
+    x = "Time",
+    y = "Proportion of genes",
+    fill = "",
+    title = "HvC comparisons: DEG vs NonDEG composition"
+  )
+```
+
+
+```{r H3K27acSeq_DGE_Species_DEGs_Proportions_Reproducible4, fig.height=7,fig.width=7}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+timepoints <- c("Day0","Day2","Day5","Day15","Day30")
+
+df <- TopTable %>%
+  filter(str_detect(Comparisons, "^HvC_Day")) %>%
+  mutate(
+    Time = str_extract(Comparisons, "Day[0-9]+"),
+    DEG = adj.P.Val < 0.05
+  ) %>%
+  filter(DEG)
+
+genes_list <- list(
+  Day0  = df %>% filter(Time == "Day0")  %>% pull(Gene) %>% unique(),
+  Day2  = df %>% filter(Time == "Day2")  %>% pull(Gene) %>% unique(),
+  Day5  = df %>% filter(Time == "Day5")  %>% pull(Gene) %>% unique(),
+  Day15 = df %>% filter(Time == "Day15") %>% pull(Gene) %>% unique(),
+  Day30 = df %>% filter(Time == "Day30") %>% pull(Gene) %>% unique()
+)
+
+ggVennDiagram(genes_list, label = "count") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    axis.text = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Species_DEGs_Proportions2_Reproducible4}
+library(dplyr)
+library(stringr)
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+df <- TopTable %>%
+  filter(str_detect(Comparisons, "^HvC_Day")) %>%
+  mutate(
+    Stage = str_extract(Comparisons, "Day[0-9]+"),
+    DEG = adj.P.Val < 0.05
+  ) %>%
+  filter(DEG)
+
+genes <- list(
+  Day0  = df %>% filter(Stage == "Day0")  %>% pull(Gene) %>% unique(),
+  Day2  = df %>% filter(Stage == "Day2")  %>% pull(Gene) %>% unique(),
+  Day5  = df %>% filter(Stage == "Day5")  %>% pull(Gene) %>% unique(),
+  Day15 = df %>% filter(Stage == "Day15") %>% pull(Gene) %>% unique(),
+  Day30 = df %>% filter(Stage == "Day30") %>% pull(Gene) %>% unique()
+)
+
+days <- names(genes)
+
+shared_all <- Reduce(intersect, genes)
+
+get_fate <- function(day) {
+
+  g <- genes[[day]]
+
+  specific <- setdiff(g, unlist(genes[names(genes) != day]))
+
+  shared_all_day <- intersect(g, shared_all)
+
+  shared_partial <- setdiff(
+    setdiff(g, specific),
+    shared_all_day
+  )
+
+  data.frame(
+    Day = day,
+    Specific = length(specific),
+    Shared_partial = length(shared_partial),
+    Shared_all = length(shared_all_day)
+  )
+}
+
+plot_df <- do.call(rbind, lapply(names(genes), get_fate))
+
+library(tidyr)
+
+plot_long <- plot_df %>%
+  pivot_longer(
+    cols = c(Specific, Shared_partial, Shared_all),
+    names_to = "Category",
+    values_to = "Count"
+  )
+
+plot_long$Day <- factor(
+  plot_long$Day,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+
+library(ggplot2)
+
+ggplot(plot_long, aes(x = Day, y = Count, fill = Category)) +
+  geom_col() +
+    scale_fill_manual(values = c(
+    "Specific" = "#D55E00",
+    "Shared_partial" = "#0072B2",
+    "Shared_all" = "#009E73"
+  )) +
+  theme_bw() +
+  labs(
+    x = "Developmental stage",
+    y = "Number of DEGs",
+    fill = "",
+    title = "Fate of HvC DEGs across development"
+  )
+
+library(dplyr)
+library(tidyr)
+
+plot_long_prop <- plot_df %>%
+  pivot_longer(
+    cols = c(Specific, Shared_partial, Shared_all),
+    names_to = "Category",
+    values_to = "Count"
+  ) %>%
+  group_by(Day) %>%
+  mutate(
+    Prop = Count / sum(Count)
+  ) %>%
+  ungroup()
+
+plot_long_prop$Day <- factor(
+  plot_long_prop$Day,
+  levels = c("Day0","Day2","Day5","Day15","Day30")
+)
+library(ggplot2)
+
+ggplot(plot_long_prop, aes(x = Day, y = Prop, fill = Category)) +
+  geom_col() +
+  
+  scale_fill_manual(values = c(
+    "Specific" = "#D55E00",
+    "Shared_partial" = "#0072B2",
+    "Shared_all" = "#009E73"
+  )) +
+  
+  theme_bw() +
+  labs(
+    x = "Developmental stage",
+    y = "Proportion of DEGs",
+    fill = "",
+    title = "Fate of HvC DEGs across development (normalized)"
+  )
+
+
+```
+
+
+####Trajectory
+
+```{r H3K27acSeq_DGE_Trajectory_FC_Reproducible4, fig.height=6, fig.width=10}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+direction_results <-readRDS("data/DGE/Species_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+Traj02_genes <- intersect(H3K27ac_sets$H_Day02$DEGs$Gene,H3K27ac_sets$C_Day02$DEGs$Gene)
+Traj25_genes <- intersect(H3K27ac_sets$H_Day25$DEGs$Gene,H3K27ac_sets$C_Day25$DEGs$Gene)
+Traj515_genes <- intersect(H3K27ac_sets$H_Day515$DEGs$Gene,H3K27ac_sets$C_Day515$DEGs$Gene)
+Traj1530_genes <- intersect(H3K27ac_sets$H_Day1530$DEGs$Gene,H3K27ac_sets$C_Day1530$DEGs$Gene)
+
+length(Traj02_genes)
+length(Traj25_genes)
+length(Traj515_genes)
+length(Traj1530_genes)
+
+cluster_lists <- list(
+ Traj02_genes  = Traj02_genes,
+  Traj25_genes  = Traj25_genes,
+  Traj515_genes  = Traj515_genes,
+  Traj1530_genes  = Traj1530_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_absfc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+```
+
+```{r H3K27acSeq_DGE_Trajectory_Directionality_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+
+traj_info <- list(
+  Traj02_genes = list(coef = "H_Day02", comp = "Day02"),
+  Traj25_genes = list(coef = "H_Day25", comp = "Day25"),
+  Traj515_genes = list(coef ="H_Day515", comp = "Day515"),
+ Traj1530_genes = list(coef = "H_Day1530", comp = "Day1530")
+)
+
+direction_results <- setNames(
+  lapply(names(traj_info), function(name) {
+
+    info <- traj_info[[name]]
+
+    get_fc_directions(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2,
+      gene_set = cluster_lists[[name]]
+    )
+
+  }),
+  names(traj_info)
+)
+
+# saveRDS(direction_results, "data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Trajectory_Directionality_FC_Reproducible4}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+direction_results <- readRDS("data/DGE/Trajectory_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+aa <- unique(direction_results$Traj02_genes$all$Gene)
+ab <- unique(direction_results$Traj02_genes$H_pos_C_neg$Gene)
+ac <- unique(direction_results$Traj02_genes$H_neg_C_pos$Gene)
+ad <- unique(direction_results$Traj02_genes$Both_pos$Gene)
+ae <- unique(direction_results$Traj02_genes$Both_neg$Gene)
+af <- unique(direction_results$Traj02_genes$Same_direction$Gene)
+ag <- unique(direction_results$Traj02_genes$Opposite_direction$Gene)
+
+ba <- unique(direction_results$Traj25_genes$all$Gene)
+bb <- unique(direction_results$Traj25_genes$H_pos_C_neg$Gene)
+bc <- unique(direction_results$Traj25_genes$H_neg_C_pos$Gene)
+bd <- unique(direction_results$Traj25_genes$Both_pos$Gene)
+be <- unique(direction_results$Traj25_genes$Both_neg$Gene)
+bf <- unique(direction_results$Traj25_genes$Same_direction$Gene)
+bg <- unique(direction_results$Traj25_genes$Opposite_direction$Gene)
+
+da <- unique(direction_results$Traj515_genes$all$Gene)
+db <- unique(direction_results$Traj515_genes$H_pos_C_neg$Gene)
+dc <- unique(direction_results$Traj515_genes$H_neg_C_pos$Gene)
+dd <- unique(direction_results$Traj515_genes$Both_pos$Gene)
+de <- unique(direction_results$Traj515_genes$Both_neg$Gene)
+df <- unique(direction_results$Traj515_genes$Same_direction$Gene)
+dg <- unique(direction_results$Traj515_genes$Opposite_direction$Gene)
+
+ea <- unique(direction_results$Traj1530_genes$all$Gene)
+eb <- unique(direction_results$Traj1530_genes$H_pos_C_neg$Gene)
+ec <- unique(direction_results$Traj1530_genes$H_neg_C_pos$Gene)
+ed <- unique(direction_results$Traj1530_genes$Both_pos$Gene)
+ee <- unique(direction_results$Traj1530_genes$Both_neg$Gene)
+ef <- unique(direction_results$Traj1530_genes$Same_direction$Gene)
+eg <- unique(direction_results$Traj1530_genes$Opposite_direction$Gene)
+
+cluster_lists <- list(
+  Traj02_All = aa,
+  Traj02_HumanPos = ab,
+  Traj02_ChimpPos = ac,
+  Traj02_Both_pos = ad,
+  Traj02_Both_neg = ae,
+  Traj02_Same_direction = af,
+  Traj02_Opposite_direction = ag,
+  
+  Traj25_All = ba,
+  Traj25_HumanPos = bb,
+  Traj25_ChimpPos = bc,
+  Traj25_Both_pos = bd,
+  Traj25_Both_neg = be,
+  Traj25_Same_direction = bf,
+  Traj25_Opposite_direction = bg,
+ 
+ 
+  Traj515_All = da,
+  Traj515_HumanPos = db,
+  Traj515_ChimpPos = dc,
+  Traj515_Both_pos = dd,
+  Traj515_Both_neg = de,
+  Traj515_Same_direction = df,
+  Traj515_Opposite_direction = dg,
+ 
+  Traj1530_All = ea,
+  Traj1530_HumanPos = eb,
+  Traj1530_ChimpPos = ec,
+  Traj1530_Both_pos = ed,
+  Traj1530_Both_neg = ee,
+  Traj1530_Same_direction = ef,
+  Traj1530_Opposite_direction = eg
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_Traj)
+})
+
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_2_0_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+H_comp <- "H_Day02"
+C_comp <- "C_Day02"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day02$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day02$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_4_2_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+H_comp <- "H_Day25"
+C_comp <- "C_Day25"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day25$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day25$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_15_5_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+
+H_comp <- "H_Day515"
+C_comp <- "C_Day515"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+max_val <- max(abs(c(x_limits, y_limits)))
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day515$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day515$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+```{r H3K27acSeq_DGE_Clusters_FC_Quadrants_30_15_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+H_comp <- "H_Day1530"
+C_comp <- "C_Day1530"
+
+df_wide <- TopTable %>%
+  filter(Comparisons %in% c(H_comp, C_comp)) %>%
+  dplyr::select(Gene, Comparisons, logFC) %>%
+  group_by(Gene, Comparisons) %>%
+  summarize(logFC = mean(logFC), .groups = "drop") %>%
+  pivot_wider(names_from = Comparisons, values_from = logFC) %>%
+  filter(!is.na(.data[[H_comp]]), !is.na(.data[[C_comp]]))
+
+# head(df_wide)
+# nrow(df_wide)
+
+fit <- lm(df_wide[[C_comp]] ~ df_wide[[H_comp]])
+summary(fit)
+
+r2 <- summary(fit)$r.squared
+pval <- summary(fit)$coefficients[2, "Pr(>|t|)"]
+
+# r2
+# pval
+
+format(pval, scientific = TRUE, digits = 3)
+
+library(ggplot2)
+
+x_pos <- max(df_wide[[H_comp]]) * 0.95      # right side
+x_neg <- min(df_wide[[H_comp]]) * 0.5      # left side
+
+y_pos <- max(df_wide[[C_comp]]) * 0.95
+
+# Optional: make axes symmetric around 0 for a nicer visual
+max_val <- max(abs(c(x_limits, y_limits)))
+x_limits <- c(-7, 7)
+y_limits <- c(-7, 7)
+
+
+genes_of_interest_human <- unique(H3K27ac_sets$H_Day1530$DEGs$Gene)
+genes_of_interest_chimp <- unique(H3K27ac_sets$C_Day1530$DEGs$Gene)
+
+df_wide$highlight <- dplyr::case_when(
+  df_wide$Gene %in% genes_of_interest_human &
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Both",
+
+  df_wide$Gene %in% genes_of_interest_human ~ "T-DEG Human Only",
+
+  df_wide$Gene %in% genes_of_interest_chimp ~ "T-DEG Chimp Only",
+
+  TRUE ~ "Other"
+)
+
+# Plot
+ggplot(df_wide, aes(x = .data[[H_comp]], y = .data[[C_comp]], color = highlight)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("T-DEG Human Only" = "red", "T-DEG Chimp Only" = "blue", "T-DEG Both" = "purple", "Other" = "grey70")) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text",
+    x = min(df_wide[[H_comp]], na.rm = TRUE),
+    y = max(df_wide[[C_comp]], na.rm = TRUE),
+    label = paste0(
+      "R² = ", round(r2, 3),
+      "\np = ", format(pval, scientific = TRUE, digits = 3)
+    ),
+    hjust = 0,
+    vjust = 1
+  ) +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  labs(
+    x = H_comp,
+    y = C_comp,
+    title = paste0(H_comp, " vs ", C_comp),
+    color = "Gene Set"
+  )
+
+```
+
+
+####Interactions
+
+```{r H3K27acSeq_DGE_Interaction_FC_Reproducible4}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+TopTable_H3K27ac_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+Inter_02_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj02$DEGs$Gene)
+Inter_25_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj25$DEGs$Gene)
+Inter_515_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj515$DEGs$Gene)
+Inter_1530_genes <- unique(H3K27ac_sets$Sig_Sp_inter_Traj1530$DEGs$Gene)
+
+cluster_lists <- list(
+  Inter_02_genes  = Inter_02_genes,
+  Inter_25_genes  = Inter_25_genes,
+  Inter_515_genes  = Inter_515_genes,
+  Inter_1530_genes  = Inter_1530_genes
+)
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_trajectory_No4(cluster_lists[[clust_name]], clust_name, TopTable_H3K27ac_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+```{r H3K27acSeq_DGE_Interaction_Directionality_Reproducible4}
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/H3K27ac_sets__H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+traj_info <- list(
+  InterTraj02 = list(coef = "Sig_Sp_inter_Traj02", comp = "Day02"),
+  InterTraj25 = list(coef = "Sig_Sp_inter_Traj25", comp = "Day25"),
+  InterTraj515 = list(coef = "Sig_Sp_inter_Traj515", comp = "Day515"),
+  InterTraj1530 = list(coef = "Sig_Sp_inter_Traj1530", comp = "Day1530")
+)
+
+cluster_lists <- list(
+  InterTraj02  = Inter_02_genes,
+  InterTraj25  = Inter_25_genes,
+  InterTraj515 = Inter_515_genes,
+  InterTraj1530 = Inter_1530_genes
+)
+
+direction_results <- setNames(
+  lapply(names(traj_info), function(name) {
+
+    info <- traj_info[[name]]
+
+    get_fc_directions(
+      traj_label = name,
+      coef_name = info$coef,
+      comparison_label = info$comp,
+      top_table_all = TopTable,
+      fit_obj = fit2,
+      gene_set = cluster_lists[[name]]
+    )
+
+  }),
+  names(traj_info)
+)
+
+# saveRDS(direction_results, "data/DGE/Interaction_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+```
+
+```{r H3K27acSeq_DGE_Interaction_Directionality_FC_Reproducible4}
+
+TopTable <- readRDS("data/DGE/TopTable_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+H3K27ac_sets <- readRDS("data/DGE/Interaction_Directions_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+ComparisonNames <- readRDS("data/DGE/ComparisonNames_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+fit2 <- readRDS("data/DGE/fit2_H3K27ac_hg38_Reproducible4_fc_No4.RDS")
+
+
+TopTable$absfc <- abs(TopTable$logFC)
+
+TopTable_H3K27ac_Traj <- TopTable %>% 
+  filter(Comparisons %in% c(
+    "H_Day02","H_Day25","H_Day515","H_Day1530",
+    "C_Day02","C_Day25","C_Day515","C_Day1530"
+  ))
+
+aa <- unique(H3K27ac_sets$InterTraj02$all$Gene)
+ab <- unique(H3K27ac_sets$InterTraj02$H_pos_C_neg$Gene)
+ac <- unique(H3K27ac_sets$InterTraj02$H_neg_C_pos$Gene)
+ad <- unique(H3K27ac_sets$InterTraj02$Both_pos$Gene)
+ae <- unique(H3K27ac_sets$InterTraj02$Both_neg$Gene)
+af <- unique(H3K27ac_sets$InterTraj02$Same_direction$Gene)
+ag <- unique(H3K27ac_sets$InterTraj02$Opposite_direction$Gene)
+
+ba <- unique(H3K27ac_sets$InterTraj25$all$Gene)
+bb <- unique(H3K27ac_sets$InterTraj25$H_pos_C_neg$Gene)
+bc <- unique(H3K27ac_sets$InterTraj25$H_neg_C_pos$Gene)
+bd <- unique(H3K27ac_sets$InterTraj25$Both_pos$Gene)
+be <- unique(H3K27ac_sets$InterTraj25$Both_neg$Gene)
+bf <- unique(H3K27ac_sets$InterTraj25$Same_direction$Gene)
+bg <- unique(H3K27ac_sets$InterTraj25$Opposite_direction$Gene)
+
+
+da <- unique(H3K27ac_sets$InterTraj515$all$Gene)
+db <- unique(H3K27ac_sets$InterTraj515$H_pos_C_neg$Gene)
+dc <- unique(H3K27ac_sets$InterTraj515$H_neg_C_pos$Gene)
+dd <- unique(H3K27ac_sets$InterTraj515$Both_pos$Gene)
+de <- unique(H3K27ac_sets$InterTraj515$Both_neg$Gene)
+df <- unique(H3K27ac_sets$InterTraj515$Same_direction$Gene)
+dg <- unique(H3K27ac_sets$InterTraj515$Opposite_direction$Gene)
+
+ea <- unique(H3K27ac_sets$InterTraj1530$all$Gene)
+eb <- unique(H3K27ac_sets$InterTraj1530$H_pos_C_neg$Gene)
+ec <- unique(H3K27ac_sets$InterTraj1530$H_neg_C_pos$Gene)
+ed <- unique(H3K27ac_sets$InterTraj1530$Both_pos$Gene)
+ee <- unique(H3K27ac_sets$InterTraj1530$Both_neg$Gene)
+ef <- unique(H3K27ac_sets$InterTraj1530$Same_direction$Gene)
+eg <- unique(H3K27ac_sets$InterTraj1530$Opposite_direction$Gene)
+
+cluster_lists <- list(
+  Inter02_All = aa,
+  Inter02_HumanPos = ab,
+  Inter02_ChimpPos = ac,
+  Inter02_Both_pos = ad,
+  Inter02_Both_neg = ae,
+  Inter02_Same_direction = af,
+  Inter02_Opposite_direction = ag,
+  
+  Inter25_All = ba,
+  Inter25_HumanPos = bb,
+  Inter25_ChimpPos = bc,
+  Inter25_Both_pos = bd,
+  Inter25_Both_neg = be,
+  Inter25_Same_direction = bf,
+  Inter25_Opposite_direction = bg,
+
+  
+  Inter515_All = da,
+  Inter515_HumanPos = db,
+  Inter515_ChimpPos = dc,
+  Inter515_Both_pos = dd,
+  Inter515_Both_neg = de,
+  Inter515_Same_direction = df,
+  Inter515_Opposite_direction = dg,
+  
+  
+  Inter1530_All = ea,
+  Inter1530_HumanPos = eb,
+  Inter1530_ChimpPos = ec,
+  Inter1530_Both_pos = ed,
+  Inter1530_Both_neg = ee,
+  Inter1530_Same_direction = ef,
+  Inter1530_Opposite_direction = eg
+  
+)
+
+
+cluster_plots <- lapply(names(cluster_lists), function(clust_name) {
+  plot_cluster_fc_sig_interaction_No4(cluster_lists[[clust_name]], clust_name, TopTable_H3K27ac_Traj)
+})
+names(cluster_plots) <- names(cluster_lists)
+
+for (p in cluster_plots) print(p)
+
+
+```
+
+
+
+
+
+```{r Updating Website, eval = FALSE, fig.height=10, fig.width=10}
+
+# git -> commit all changes
+# git -> push
+wflow_publish("analysis/H3K27ac_DGE.Rmd")
+
+```
+
