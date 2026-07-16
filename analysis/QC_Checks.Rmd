@@ -61,7 +61,7 @@ library("pheatmap")
 library("Cormotif")
 library("tidyverse")
 library("workflowr")
-library("RUVSeq")
+# library("RUVSeq")
 library("SummarizedExperiment")
 library("readxl")
 library("ggfortify")
@@ -494,7 +494,7 @@ featurecounts_table <- Raw_H3K27ac_hg38_Reproducible2_fc
 # names(peaks_gr) <- as.character(seq_len(length(peaks_gr)))
 # 
 # saveRDS(peaks_gr,"data/Peaks/peaks_gr_H3K27ac_hg38_Reproducible2.RDS")
-# # peaks_gr <- readRDS("data/Peaks/peaks_gr_H3K27ac_hg38_Reproducible2.RDS")
+peaks_gr <- readRDS("data/Peaks/peaks_gr_H3K27ac_hg38_Reproducible2.RDS")
 # 
 # 
 # blacklist_gr <- GRanges(
