@@ -724,7 +724,7 @@ saveRDS(
 ```
 
 ###Filtered Genomic Region Proportions
-```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered,fig.height=4,fig.width=4}
+```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered1,fig.height=4,fig.width=4}
 
 peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
 
@@ -2514,7 +2514,7 @@ pheatmap(
 ```
 
 ##Filt Reproducible2
-```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered,fig.height=4,fig.width=4}
+```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered2,fig.height=4,fig.width=4}
 
 peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
 
@@ -4251,7 +4251,7 @@ pheatmap(
 ##Filt Reproducible2
 
 
-```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered2,fig.height=4,fig.width=4}
+```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered3,fig.height=4,fig.width=4}
 
 peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
 
