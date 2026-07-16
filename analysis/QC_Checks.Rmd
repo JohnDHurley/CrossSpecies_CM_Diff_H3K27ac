@@ -848,15 +848,15 @@ dim(featurecounts_promoter)
 # Save objects
 # --------------------------------------------------
 
-saveRDS(
-    promoter_peaks,
-    "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges.RDS"
-)
+# saveRDS(
+#     promoter_peaks,
+#     "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges.RDS"
+# )
 
-saveRDS(
-    featurecounts_promoter,
-    "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS"
-)                                  
+# saveRDS(
+#     featurecounts_promoter,
+#     "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS"
+# )                                  
 
 ```
 
@@ -2534,11 +2534,11 @@ H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
 
 # saveRDS(H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
 
-Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
-    H3K27ac_hg38_Reproducible2_fc[
-        rownames(H3K27ac_hg38_Reproducible2_fc) %in%
-        rownames(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition),
-    ]
+# Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
+#     H3K27ac_hg38_Reproducible2_fc[
+#         rownames(H3K27ac_hg38_Reproducible2_fc) %in%
+#         rownames(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition),
+#     ]
 
 # saveRDS(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
 
@@ -4270,13 +4270,13 @@ H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
     ]
 
 # saveRDS(H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
-
-Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
-    H3K27ac_hg38_Reproducible2_fc[
-        rownames(H3K27ac_hg38_Reproducible2_fc) %in%
-        rownames(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition),
-    ]
-
+# 
+# Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
+#     H3K27ac_hg38_Reproducible2_fc[
+#         rownames(H3K27ac_hg38_Reproducible2_fc) %in%
+#         rownames(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition),
+#     ]
+# 
 # saveRDS(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
 
 ```
