@@ -72,10 +72,11 @@ library("AnnotationHub")
 library("GenomicAlignments")
 library("ChIPseeker")
 library("TxDb.Hsapiens.UCSC.hg38.knownGene")
+library("GenomeInfoDb")
 
 
-install.packages("Rtools")
-BiocManager::install("TxDb.Hsapiens.UCSC.hg38.knownGene")
+# install.packages("Rtools")
+# BiocManager::install("TxDb.Hsapiens.UCSC.hg38.knownGene")
 
 #Objects made but loaded as needed
 # cuttag_metadata <-readRDS("data/Raw_Data/cuttag_metadata.RDS")
@@ -472,16 +473,16 @@ compute_frip_minimal <- function(bam_files, peak_files) {
 ##Reproducible2
 ```{r Filtering_BlackListRegions_Mappability_Reproducible2, results="hide"}
 
-# Master_Reproducible2_Orthologous_Reciprocal90_inhg38_sorted_merged_annotated_AfterLiftover <- readRDS("data/Raw_Data/Master_Reproducible2_Orthologous_Reciprocal90_inhg38_sorted_merged_annotated_AfterLiftover.RDS")
-# 
-# GRCh38_unified_blacklist <- readRDS("data/Raw_Data/GRCh38_unified_blacklist.RDS")
-# 
-# Raw_H3K27ac_hg38_Reproducible2_fc <- readRDS("data/Raw_Data/Raw_H3K27ac_hg38_Reproducible2_fc.RDS")
-# 
-# peaks <- Master_Reproducible2_Orthologous_Reciprocal90_inhg38_sorted_merged_annotated_AfterLiftover
-# blacklist <- GRCh38_unified_blacklist
-# featurecounts_table <- Raw_H3K27ac_hg38_Reproducible2_fc
-# 
+Master_Reproducible2_Orthologous_Reciprocal90_inhg38_sorted_merged_annotated_AfterLiftover <- readRDS("data/Raw_Data/Master_Reproducible2_Orthologous_Reciprocal90_inhg38_sorted_merged_annotated_AfterLiftover.RDS")
+
+GRCh38_unified_blacklist <- readRDS("data/Raw_Data/GRCh38_unified_blacklist.RDS")
+
+Raw_H3K27ac_hg38_Reproducible2_fc <- readRDS("data/Raw_Data/Raw_H3K27ac_hg38_Reproducible2_fc.RDS")
+
+peaks <- Master_Reproducible2_Orthologous_Reciprocal90_inhg38_sorted_merged_annotated_AfterLiftover
+blacklist <- GRCh38_unified_blacklist
+featurecounts_table <- Raw_H3K27ac_hg38_Reproducible2_fc
+
 # # ---------------------------
 # # BUILD GRanges
 # 
@@ -490,10 +491,12 @@ compute_frip_minimal <- function(bam_files, peak_files) {
 #     ranges = IRanges(start = peaks$V2, end = peaks$V3)
 # )
 # 
+# names(peaks_gr) <- as.character(seq_len(length(peaks_gr)))
+# 
 # saveRDS(peaks_gr,"data/Peaks/peaks_gr_H3K27ac_hg38_Reproducible2.RDS")
-peaks_gr <- readRDS("data/Peaks/peaks_gr_H3K27ac_hg38_Reproducible2.RDS")
-
-
+# # peaks_gr <- readRDS("data/Peaks/peaks_gr_H3K27ac_hg38_Reproducible2.RDS")
+# 
+# 
 # blacklist_gr <- GRanges(
 #     seqnames = blacklist$V1,
 #     ranges = IRanges(start = blacklist$V2,
@@ -526,8 +529,8 @@ peaks_bl <- readRDS("data/Peaks/peaks_bl_H3K27ac_hg38_Reproducible2.RDS")
 map_gr <- readRDS("data/Peaks/map_gr_blacklist_H3K27ac_hg38_Reproducible2.RDS")
 
 
-# ---------------------------
-# OVERLAPS
+# # ---------------------------
+# # OVERLAPS
 # hits <- findOverlaps(peaks_bl, map_gr)
 # 
 # df <- data.frame(
@@ -591,69 +594,269 @@ cat("Fraction retained Reproducible2:", mean(keep), "\n")
 peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
 featurecounts_filt <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
 
+
+# Ensure peak order matches counts table
+# --------------------------------------------------
+
+idx <- match(
+    rownames(featurecounts_filt),
+    names(peaks_filt)
+)
+
+# Check all peaks are present
+stopifnot(sum(is.na(idx)) == 0)
+
+# Reorder peaks to match featureCounts
+peaks_filt <- peaks_filt[idx]
+
+# Confirm exact alignment
+stopifnot(
+    all(names(peaks_filt) == rownames(featurecounts_filt))
+)
+
+# Annotate peaks
+# --------------------------------------------------
+
 txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
 
 peaks_filt_anno <- annotatePeak(
-  peaks_filt,
-  TxDb = txdb,
-  annoDb = "org.Hs.eg.db"
+    peaks_filt,
+    TxDb = txdb,
+    annoDb = "org.Hs.eg.db"
 )
 
+
 anno_df <- as.data.frame(peaks_filt_anno)
+
 class(anno_df)
 str(anno_df$annotation)
+
 anno_df$annotation[1:10]
 
+# Collapse annotation categories
+# --------------------------------------------------
+
 anno_df$annotation_group <- dplyr::case_when(
-  grepl("^Promoter", anno_df$annotation) ~ anno_df$annotation,  # KEEP original promoter label
-  grepl("Exon", anno_df$annotation) ~ "Exon",
-  grepl("Intron", anno_df$annotation) ~ "Intron",
-  grepl("UTR", anno_df$annotation) ~ "UTR",
-  grepl("Downstream", anno_df$annotation) ~ "Downstream",
-  grepl("Intergenic", anno_df$annotation) ~ "Intergenic",
-  TRUE ~ "Other"
+    grepl("^Promoter", anno_df$annotation) ~ anno_df$annotation,
+    grepl("Exon", anno_df$annotation) ~ "Exon",
+    grepl("Intron", anno_df$annotation) ~ "Intron",
+    grepl("UTR", anno_df$annotation) ~ "UTR",
+    grepl("Downstream", anno_df$annotation) ~ "Downstream",
+    grepl("Intergenic", anno_df$annotation) ~ "Intergenic",
+    TRUE ~ "Other"
 )
 
 
 anno_counts <- anno_df %>%
-  dplyr::count(annotation_group) %>%
-  mutate(percent = 100 * n / sum(n))
+    dplyr::count(annotation_group) %>%
+    mutate(percent = 100 * n / sum(n))
 
 
+# Plot annotation distribution
+# --------------------------------------------------
 
-ggplot(anno_counts,
-       aes(x = "All Peaks",
-           y = percent,
-           fill = annotation_group)) +
-  geom_col(color = "black") +
-  theme_classic(base_size = 10) +
-  labs(
-    x = NULL,
-    y = "Percent of peaks",
-    fill = "Genomic annotation Reproducible2"
-  ) +
-  theme(
-    axis.text.x = element_text(angle = 0, hjust = 0.5),
-    legend.position = "right"
-  )
+ggplot(
+    anno_counts,
+    aes(
+        x = "All Peaks",
+        y = percent,
+        fill = annotation_group
+    )
+) +
+    geom_col(color = "black") +
+    theme_classic(base_size = 10) +
+    labs(
+        x = NULL,
+        y = "Percent of peaks",
+        fill = "Genomic annotation Reproducible2 \n Condition Filtering CPM>2 in =>4"
+    ) +
+    theme(
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "right"
+    )
+
 
 length(peaks_filt)
 
-promoter_peaks <- anno_df[
-    grepl("^Promoter", anno_df$annotation),
+
+# Extract promoter peaks
+# --------------------------------------------------
+
+promoter_idx <- grepl(
+    "^Promoter",
+    anno_df$annotation
+)
+
+
+# Keep GRanges object
+promoter_peaks <- peaks_filt[promoter_idx]
+
+
+# Subset featureCounts using peak IDs
+featurecounts_promoter <- featurecounts_filt[
+    names(promoter_peaks),
 ]
 
+
+# Check alignment
+stopifnot(
+    all(names(promoter_peaks) == rownames(featurecounts_promoter))
+)
+
+
 dim(promoter_peaks)
-
-saveRDS(promoter_peaks,"data/Data_Sets/Promotors_H3K27ac_hg38_Reproducible2.RDS")
-
-promoter_idx <- grepl("^Promoter", anno_df$annotation)
-
-featurecounts_promoter <- featurecounts_filt[promoter_idx,]
-
 dim(featurecounts_promoter)
 
-saveRDS(featurecounts_promoter,"data/Data_Sets/Promotors_H3K27ac_hg38_Reproducible2_fc.RDS")                                    
+
+# Save objects
+# --------------------------------------------------
+
+saveRDS(
+    promoter_peaks,
+    "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_GRanges.RDS"
+)
+
+saveRDS(
+    featurecounts_promoter,
+    "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc.RDS"
+)                                  
+
+```
+
+###Filtered Genomic Region Proportions
+```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered,fig.height=4,fig.width=4}
+
+peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
+
+featurecounts_FilteredCondition <- readRDS(
+    "data/DGE/H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition.RDS")
+
+
+# Ensure peak order matches counts table
+# --------------------------------------------------
+
+idx <- match(
+    rownames(featurecounts_FilteredCondition),
+    names(peaks_filt)
+)
+
+# Check all peaks are present
+stopifnot(sum(is.na(idx)) == 0)
+
+# Reorder peaks to match featureCounts
+peaks_filt <- peaks_filt[idx]
+
+# Confirm exact alignment
+stopifnot(
+    all(names(peaks_filt) == rownames(featurecounts_FilteredCondition))
+)
+
+# Annotate peaks
+# --------------------------------------------------
+
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+peaks_filt_anno <- annotatePeak(
+    peaks_filt,
+    TxDb = txdb,
+    annoDb = "org.Hs.eg.db"
+)
+
+
+anno_df <- as.data.frame(peaks_filt_anno)
+
+class(anno_df)
+str(anno_df$annotation)
+
+anno_df$annotation[1:10]
+
+# Collapse annotation categories
+# --------------------------------------------------
+
+anno_df$annotation_group <- dplyr::case_when(
+    grepl("^Promoter", anno_df$annotation) ~ anno_df$annotation,
+    grepl("Exon", anno_df$annotation) ~ "Exon",
+    grepl("Intron", anno_df$annotation) ~ "Intron",
+    grepl("UTR", anno_df$annotation) ~ "UTR",
+    grepl("Downstream", anno_df$annotation) ~ "Downstream",
+    grepl("Intergenic", anno_df$annotation) ~ "Intergenic",
+    TRUE ~ "Other"
+)
+
+
+anno_counts <- anno_df %>%
+    dplyr::count(annotation_group) %>%
+    mutate(percent = 100 * n / sum(n))
+
+
+# Plot annotation distribution
+# --------------------------------------------------
+
+ggplot(
+    anno_counts,
+    aes(
+        x = "All Peaks",
+        y = percent,
+        fill = annotation_group
+    )
+) +
+    geom_col(color = "black") +
+    theme_classic(base_size = 10) +
+    labs(
+        x = NULL,
+        y = "Percent of peaks",
+        fill = "Genomic annotation Reproducible2 \n Condition Filtering CPM>2 in =>4"
+    ) +
+    theme(
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "right"
+    )
+
+
+length(peaks_filt)
+
+
+# Extract promoter peaks
+# --------------------------------------------------
+
+promoter_idx <- grepl(
+    "^Promoter",
+    anno_df$annotation
+)
+
+
+# Keep GRanges object
+promoter_peaks <- peaks_filt[promoter_idx]
+
+
+# Subset featureCounts using peak IDs
+featurecounts_promoter <- featurecounts_FilteredCondition[
+    names(promoter_peaks),
+]
+
+
+# Check alignment
+stopifnot(
+    all(names(promoter_peaks) == rownames(featurecounts_promoter))
+)
+
+
+dim(promoter_peaks)
+dim(featurecounts_promoter)
+
+
+# Save objects
+# --------------------------------------------------
+
+saveRDS(
+    promoter_peaks,
+    "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges.RDS"
+)
+
+saveRDS(
+    featurecounts_promoter,
+    "data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS"
+)                                  
 
 ```
 
@@ -2309,6 +2512,531 @@ pheatmap(
 )
 
 ```
+
+##Filt Reproducible2
+```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered,fig.height=4,fig.width=4}
+
+peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
+
+H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition <- readRDS("data/DGE/H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition.RDS")
+
+Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges.RDS")
+
+Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+H3K27ac_hg38_Reproducible2_fc <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
+
+H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
+    H3K27ac_hg38_Reproducible2_fc[
+        rownames(H3K27ac_hg38_Reproducible2_fc) %in%
+        rownames(H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition),
+    ]
+
+# saveRDS(H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
+    H3K27ac_hg38_Reproducible2_fc[
+        rownames(H3K27ac_hg38_Reproducible2_fc) %in%
+        rownames(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition),
+    ]
+
+# saveRDS(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+```
+
+```{r H3K27acSeq_FeatureCounts_Reproducible2_Human_Filtered, fig.height=6,fig.width=12}
+####Human####
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+log2cpm <- cpm(counts, log = TRUE)
+
+log2cpm_Human <- log2cpm %>%
+  as.data.frame() %>%
+  dplyr::select(starts_with("H"))
+
+col_labels <- colnames(log2cpm_Human)
+
+hist(as.matrix(log2cpm_Human),
+     main = "Histogram of all counts - Human Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human, main = "Boxplots of log cpm per sample Human
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+log2cpm_Human_Day0 <- log2cpm_Human %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day0"))
+
+col_labels <- colnames(log2cpm_Human_Day0)
+
+hist(as.matrix(log2cpm_Human_Day0),
+     main = "Histogram of all counts - Human Day 0 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human_Day0, main = "Boxplots of log cpm per sample Human Day 0
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+log2cpm_Human_Day2 <- log2cpm_Human %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day2"))
+
+col_labels <- colnames(log2cpm_Human_Day2)
+
+hist(as.matrix(log2cpm_Human_Day2),
+     main = "Histogram of all counts - Human Day 2 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human_Day2, main = "Boxplots of log cpm per sample Human Day 2
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+log2cpm_Human_Day4 <- log2cpm_Human %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day4"))
+
+col_labels <- colnames(log2cpm_Human_Day4)
+
+hist(as.matrix(log2cpm_Human_Day4),
+     main = "Histogram of all counts - Human Day 4 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human_Day4, main = "Boxplots of log cpm per sample Human Day 4
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+log2cpm_Human_Day5 <- log2cpm_Human %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day5"))
+
+col_labels <- colnames(log2cpm_Human_Day5)
+
+hist(as.matrix(log2cpm_Human_Day5),
+     main = "Histogram of all counts - Human Day 5 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human_Day5, main = "Boxplots of log cpm per sample Human Day 5
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+
+log2cpm_Human_Day15 <- log2cpm_Human %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day15"))
+
+col_labels <- colnames(log2cpm_Human_Day15)
+
+hist(as.matrix(log2cpm_Human_Day15),
+     main = "Histogram of all counts - Human Day 15 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human_Day15, main = "Boxplots of log cpm per sample Human Day 15
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+log2cpm_Human_Day30 <- log2cpm_Human %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day30"))
+
+col_labels <- colnames(log2cpm_Human_Day30)
+
+hist(as.matrix(log2cpm_Human_Day30),
+     main = "Histogram of all counts - Human Day 30 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Human_Day30, main = "Boxplots of log cpm per sample Human Day 30
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+```
+
+
+```{r H3K27acSeq_FeatureCounts_Reproducible2_Chimp_Filtered, fig.height=6,fig.width=12}
+####Chimp####
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+log2cpm <- cpm(counts, log = TRUE)
+
+log2cpm_Chimp <- log2cpm %>%
+  as.data.frame() %>%
+  dplyr::select(starts_with("C"))
+
+col_labels <- colnames(log2cpm_Chimp)
+
+hist(as.matrix(log2cpm_Chimp),
+     main = "Histogram of all counts - Chimp Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp, main = "Boxplots of log cpm per sample - Chimp
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+log2cpm_Chimp_Day0 <- log2cpm_Chimp %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day0"))
+
+col_labels <- colnames(log2cpm_Chimp_Day0)
+
+hist(as.matrix(log2cpm_Chimp_Day0),
+     main = "Histogram of all counts - Chimp Day 0 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp_Day0, main = "Boxplots of log cpm per sample Chimp Day 0
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+log2cpm_Chimp_Day2 <- log2cpm_Chimp %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day2"))
+
+col_labels <- colnames(log2cpm_Chimp_Day2)
+
+hist(as.matrix(log2cpm_Chimp_Day2),
+     main = "Histogram of all counts - Chimp Day 2 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp_Day2, main = "Boxplots of log cpm per sample Chimp Day 2
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+log2cpm_Chimp_Day4 <- log2cpm_Chimp %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day4"))
+
+col_labels <- colnames(log2cpm_Chimp_Day4)
+
+hist(as.matrix(log2cpm_Chimp_Day4),
+     main = "Histogram of all counts - Chimp Day 4 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp_Day4, main = "Boxplots of log cpm per sample Chimp Day 4
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+log2cpm_Chimp_Day5 <- log2cpm_Chimp %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day5"))
+
+col_labels <- colnames(log2cpm_Chimp_Day5)
+
+hist(as.matrix(log2cpm_Chimp_Day5),
+     main = "Histogram of all counts - Chimp Day 5 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp_Day5, main = "Boxplots of log cpm per sample Chimp Day 5
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+
+log2cpm_Chimp_Day15 <- log2cpm_Chimp %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day15"))
+
+col_labels <- colnames(log2cpm_Chimp_Day15)
+
+hist(as.matrix(log2cpm_Chimp_Day15),
+     main = "Histogram of all counts - Chimp Day 15 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp_Day15, main = "Boxplots of log cpm per sample Chimp Day 15
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+
+
+log2cpm_Chimp_Day30 <- log2cpm_Chimp %>%
+  as.data.frame() %>%
+  dplyr::select(contains("Day30"))
+
+col_labels <- colnames(log2cpm_Chimp_Day30)
+
+hist(as.matrix(log2cpm_Chimp_Day30),
+     main = "Histogram of all counts - Chimp Day 30 Reproducible2 \n Filtered by Condition - CPM>2 in >4",
+     xlab = expression("Log"[2]*" counts-per-million"),
+     col = 4)
+
+boxplot(log2cpm_Chimp_Day30, main = "Boxplots of log cpm per sample Chimp Day 30
+          Reproducible2 \n Filtered by Condition - CPM>2 in >4", xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+```
+
+###Cor_HeatMap
+```{r H3K27acSeq_FeatureCounts_Reproducible2_Cor_Filtered, fig.height=10,fig.width=10}
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata
+
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day4","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+library(RColorBrewer)
+
+my_breaks <- seq(0, 1, length.out = 101)
+my_colors <- colorRampPalette(c("darkblue","blue","lightblue", "white","salmon","red","darkred"))(100)
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+  main = "Sample-Sample Correlation\nReproducible2 \n Filtered by Condition - CPM>2 in >4"
+)
+
+```
+
+###Outlier_Filtering
+
+```{r H3K27acSeq_FeatureCounts_Reproducible2_Outlier_Filtering_Filtered,fig.height=10,fig.width=10}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+metadata <- H3K27ac_Metadata
+
+counts <- counts %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day4","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+library(RColorBrewer)
+
+my_breaks <- seq(0, 1, length.out = 101)
+my_colors <- colorRampPalette(c("darkblue","blue","lightblue", "white","salmon","red","darkred"))(100)
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+  main = "Sample-Sample Correlation \n Reproducible2 \n Filtered by Condition - CPM>2 in >4 \n Outliers Removed "
+)
+
+
+```
+
+####Promoters
+#####Cor_HeatMap
+```{r H3K27acSeq_FeatureCounts_Reproducible2_Cor_Promoters_Filtered, fig.height=10,fig.width=10}
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS") 
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata
+
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day4","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+library(RColorBrewer)
+
+my_breaks <- seq(0, 1, length.out = 101)
+my_colors <- colorRampPalette(c("darkblue","blue","lightblue", "white","salmon","red","darkred"))(100)
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+  main = "Sample-Sample Correlation\nReproducible2 \n Filtered by Condition - CPM>2 in >4 \n Outliers Removed \n Promoters Only"
+)
+
+```
+
+#####Outlier_Filtering
+
+```{r H3K27acSeq_FeatureCounts_Reproducible2_Outlier_Filtering_Promoters_Filtered,fig.height=10,fig.width=10}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS") 
+counts <- counts %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day4","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+library(RColorBrewer)
+
+my_breaks <- seq(0, 1, length.out = 101)
+my_colors <- colorRampPalette(c("darkblue","blue","lightblue", "white","salmon","red","darkred"))(100)
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+  main = "Sample-Sample Correlation \n Reproducible2 \n Filtered by Condition - CPM>2 in >4 \n Outliers Removed \n Promoters Only"
+)
+
+```
+
 ##Reproducible3
 ###Boxplot_Histograms
 ```{r H3K27acSeq_FeatureCounts_Reproducible3, fig.height=6,fig.width=12}
@@ -3518,6 +4246,252 @@ pheatmap(
 )
 
 ```
+
+
+##Filt Reproducible2
+
+
+```{r H3K27acSeq_FeatureCounts_Reproducible2_GenomicRegions_Filtered2,fig.height=4,fig.width=4}
+
+peaks_filt <- readRDS("data/Peaks/peaks_filt_H3K27ac_hg38_Reproducible2.RDS")
+
+H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition <- readRDS("data/DGE/H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition.RDS")
+
+Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_FilteredCondition_GRanges.RDS")
+
+Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+H3K27ac_hg38_Reproducible2_fc <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
+
+H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
+    H3K27ac_hg38_Reproducible2_fc[
+        rownames(H3K27ac_hg38_Reproducible2_fc) %in%
+        rownames(H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition),
+    ]
+
+# saveRDS(H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition <-
+    H3K27ac_hg38_Reproducible2_fc[
+        rownames(H3K27ac_hg38_Reproducible2_fc) %in%
+        rownames(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition),
+    ]
+
+# saveRDS(Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition,"data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+```
+
+###Boxplot_Histograms
+
+```{r H3K27acSeq_FeatureCounts_Reproducible2_No4_Filtered2, fig.height=6,fig.width=12}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>% 
+  filter(Timepoint!="Day4")
+
+group <- metadata$Cond
+
+hist(log2cpm, main = "Histogram of filtered counts \n Reproducible 2 \n Filtered by Condition - CPM>2 in >4",
+     xlab =expression("Log"[2]*" counts-per-million"), col =5 )
+
+col_labels <- metadata$SampleName
+
+boxplot(log2cpm, main = "Boxplots of log cpm per sample
+        Reproducible2, Day 5",xaxt = "n", xlab= "")
+axis(1,
+     at = 1:length(col_labels),  # positions (one per sample)
+     labels = col_labels,        # your labels vector
+     las = 2,               # rotate text vertically (like srt=90)
+     cex.axis = 0.6)        # shrink label size
+
+```
+
+###Cor_HeatMap
+```{r H3K27acSeq_FeatureCounts_Reproducible2_No4_Cor_Filtered2,fig.height=8,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4"))
+metadata <- H3K27ac_Metadata %>% 
+  filter(Timepoint!="Day4")
+log2cpm <- cpm(counts, log=TRUE) 
+  
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+         main = "Sample-Sample Correlation \n Reproducible2 (Day 5) \n Filtered by Condition - CPM>2 in >4"
+)
+
+```
+
+###Outlier_Filtering
+```{r H3K27acSeq_FeatureCounts_Reproducible2_No4_OutlierFiltering_Filtered2, fig.height=8,fig.width=8}
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata  %>% 
+  filter(Timepoint!="Day4") %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+         main = "Sample-Sample Correlation \n(Reproducible 2 - Day5) \n Filtered by Condition - CPM>2 in >4 \n (Outliers Removed)"
+)
+
+```
+
+####Promoters
+#####Cor_HeatMap
+```{r H3K27acSeq_FeatureCounts_Reproducible2_No4_Cor_Promoters_Filtered2,fig.height=8,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4"))
+metadata <- H3K27ac_Metadata %>% 
+  filter(Timepoint!="Day4")
+log2cpm <- cpm(counts, log=TRUE) 
+  
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+         main = "Sample-Sample Correlation \n Day5 Cardiac Mesoderm \n Reproducible2 \n Filtered by Condition - CPM>2 in >4 \n Promoters Only "
+)
+
+```
+
+#####Outlier_Filtering
+```{r H3K27acSeq_FeatureCounts_Reproducible2_No4_OutlierFiltering_Promoters_Filtered2, fig.height=8,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata  %>% 
+  filter(Timepoint!="Day4") %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+######Cor_HeatMap####
+Cor_log2cpm <- cor(log2cpm, method = "spearman")
+individual <- metadata$Individual
+species <- metadata$Species
+timepoint <- metadata$Timepoint
+timepoint <- factor(timepoint,levels = c("Day0","Day2","Day5","Day15","Day30"))
+Cor_metadata <- data.frame(
+  sample_cor = colnames(Cor_log2cpm),
+  species_cor = species,
+  timepoint_cor = timepoint,
+  individual_cor = individual
+)
+
+rownames(Cor_metadata) <- Cor_metadata$sample_cor
+
+
+pheatmap(
+  Cor_log2cpm,
+  fontsize_row = 5,
+  fontsize_col = 5,
+  annotation_col = Cor_metadata[, c("species_cor", "timepoint_cor", "individual_cor")],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  color = my_colors,
+  breaks = my_breaks,
+         main = "Sample-Sample Correlation \n Day5 Cardiac Mesoderm \n Reproducible2 \n Filtered by Condition - CPM>2 in >4 \n Promoters Only  \n (Outliers Removed)"
+)
+
+```
+
 ##Reproducible3
 ###Boxplot_Histograms
 ```{r H3K27acSeq_FeatureCounts_Reproducible3_No4, fig.height=6,fig.width=12}

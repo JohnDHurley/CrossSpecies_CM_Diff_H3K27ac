@@ -276,7 +276,7 @@ ggplot2::autoplot(
 
 ```
 
- 
+##No5
  
 ```{r H3K27ac_Reproducible2_PCA_PC1_PC2_No5_OutliersRemoved, fig.height=6,fig.width=8}
 
@@ -334,7 +334,464 @@ ggplot2::autoplot(
 
 ```
 
+#Filt Reproducible2
+##AllDays
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_Filtered, fig.height=6,fig.width=8}
 
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_y_reverse() +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2 \n Reproducible 2  \n Filtered by Condition - CPM>2 in >4"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+ 
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_OutliersRemoved_Filtered, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+counts <- counts %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+
+
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+ ggtitle(
+"H3K27ac PC1–PC2 \n Reproducible 2  \n Filtered by Condition - CPM>2 in >4 \n Outerliers Removed"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+
+```
+
+##No4
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_No4_Filtered, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>%
+  filter(Timepoint!="Day4") 
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2 \n Day 5 Cardiac Mesoderm \n Reproducible 2  \n Filtered by Condition - CPM>2 in >4 "
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+ 
+ 
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_No4_OutliersRemoved_Filtered, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>%
+  filter(Timepoint!="Day4") %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_y_reverse() +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2 \n Day 5 Cardiac Mesoderm \n Reproducible 2 \n Filtered by Condition - CPM>2 in >4 \n Outliers Removed"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+```
+
+
+#Promoters Filt Reproducible2
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_Filtered_Promoters, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_y_reverse() +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2 \n Reproducible 2  \n Filtered by Condition - CPM>2 in >4 \n Promoters"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_OutliersRemoved_Filtered_Promoters, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+
+counts <- counts %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+log2cpm <- cpm(counts, log=TRUE)
+metadata <- H3K27ac_Metadata %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+
+
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+ ggtitle(
+"H3K27ac PC1–PC2 \n Reproducible 2  \n Filtered by Condition - CPM>2 in >4 \n Promoters \n Outerliers Removed"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+
+```
+
+##No4
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_No4_Filtered_Promoters, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>%
+  filter(Timepoint!="Day4") 
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_y_reverse() +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2 \n Day 5 Cardiac Mesoderm \n Reproducible 2  \n Filtered by Condition - CPM>2 in >4 \n Promoters"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+ 
+ 
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_No4_OutliersRemoved_Filtered_Promoters, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/Promoters_H3K27ac_hg38_Reproducible2_fc_FilteredCondition.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day4")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>%
+  filter(Timepoint!="Day4") %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_y_reverse() +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2 \n Day 5 Cardiac Mesoderm \n Reproducible 2 \n Filtered by Condition - CPM>2 in >4 \n Promoters \n Outliers Removed"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+```
+
+ 
+ 
+```{r H3K27ac_Reproducible2_PCA_PC1_PC2_No5_OutliersRemoved_Filtered_Promoters, fig.height=6,fig.width=8}
+
+counts <- readRDS("data/Data_Sets/H3K27ac_hg38_Reproducible2_fc.RDS")
+counts <- counts %>% 
+  dplyr::select(!matches("Day5")) %>% 
+  dplyr::select(-contains("C3647_Day30")) %>% 
+  dplyr::select(-contains("C40210_Day15")) %>% 
+  dplyr::select(-contains("C3649_Day4")) %>% 
+  dplyr::select(-contains("H24280_Day2"))
+log2cpm <- cpm(counts, log=TRUE)
+
+metadata <- H3K27ac_Metadata %>%
+  filter(Timepoint!="Day5") %>% 
+  filter(SampleName != "C3647_Day30") %>% 
+  filter(SampleName != "C40210_Day15") %>% 
+  filter(SampleName != "C3649_Day4") %>% 
+  filter(SampleName != "H24280_Day2")
+
+metadata <- metadata %>%
+  dplyr::filter(SampleName %in% colnames(counts)) %>%
+  dplyr::slice(match(colnames(counts), SampleName))
+
+
+prcomp <- prcomp(t(log2cpm), scale=FALSE, center = TRUE)
+prcomp_meta <- prcomp$x %>% cbind(., metadata)
+#PCA checks
+#k=1
+
+ggplot2::autoplot(
+    prcomp,
+    data = prcomp_meta,
+    colour = "Timepoint",
+    shape  = "Species",
+    size   = 4,
+    x = 1,
+    y = 2
+) +
+  scale_color_manual(values = ann_colors$timepoint_cor) +
+  ggrepel::geom_text_repel(
+    label = prcomp_meta$CellLine,
+    vjust = -0.5,
+    max.overlaps = 50
+  ) +
+  ggtitle(
+  "H3K27ac PC1–PC2
+  Reproducible in 2 individuals of a Species-Timepoint
+  Day 4 Cardic Mesoderm
+  Outliers Removed"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+```
 
 #Reproducible3
 ##AllDays
