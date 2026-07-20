@@ -3117,6 +3117,7 @@ hist(
     xlab = "Number of samples with CPM > 2",
     xlim = c(0, max(support))
 )
+
 ```
 
 
@@ -3268,6 +3269,7 @@ counts_filt_bycondition <- counts_norep[keep_cond, ]
 cat("Condition filter:", nrow(counts_filt_bycondition), "\n")
 
 saveRDS(counts_filt_bycondition,"data/DGE/H3K27ac_hg38_Reproducible2_fc_No4_NoRep_NoOut_FilteredCondition.RDS")
+dim(counts_filt_bycondition)
 
 #create DGEList object
 dge <- DGEList(counts = counts_filt_bycondition)

@@ -520,7 +520,7 @@ ggplot2::autoplot(
   scale_y_reverse() +
   scale_color_manual(values = ann_colors$timepoint_cor) +
   ggrepel::geom_text_repel(
-    label = prcomp_meta$CellLine,
+    label = prcomp_meta$Individual,
     vjust = -0.5,
     max.overlaps = 50
   ) +
